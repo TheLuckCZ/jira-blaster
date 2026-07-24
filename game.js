@@ -17,8 +17,17 @@ canvas.width = VW; canvas.height = VH;
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
+// True on phones/tablets (coarse pointer). Drives the whole touch scheme:
+// left-half drag = move stick, right-half drag = aim + fire, HUD tap targets,
+// fractional canvas scaling, auto-aim on by default. `let` so tests can force it.
+let TOUCH = false;
+try { TOUCH = matchMedia('(pointer: coarse)').matches; } catch (e) { /* ancient browser */ }
+
 function resize() {
-  const s = Math.max(1, Math.floor(Math.min(innerWidth / VW, innerHeight / VH)));
+  const raw = Math.min(innerWidth / VW, innerHeight / VH);
+  // Desktop: whole-number upscale for crisp pixels. Touch: fractional, so a
+  // phone in landscape fills the screen instead of dropping to a small 1×.
+  const s = TOUCH ? Math.max(0.5, raw) : Math.max(1, Math.floor(raw));
   canvas.style.width = VW * s + 'px';
   canvas.style.height = VH * s + 'px';
 }
@@ -659,6 +668,13 @@ const sfx = {
 const keys = {};
 const mouse = { down: false };
 
+// Touch controls (TOUCH devices): two pointerId-tracked thumb zones.
+// The stick anchors where the left thumb lands; the right thumb aims the
+// chair by drag direction and fires while held.
+const stick = { id: null, sx: 0, sy: 0, x: 0, y: 0 };
+const aim = { id: null, sx: 0, sy: 0, x: 0, y: 0, fire: false };
+const hudHits = []; // in-game tap targets (language chips, pause), rebuilt by drawHud
+
 addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys[k] = true;
@@ -714,20 +730,47 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (state === 'over') { if (overTimer > 0.8) startGame(); return; }
-  if (state === 'play' && paused && debugMode) {
+  if (state === 'play') {
     const q = canvasPos(e);
-    for (const h of debugHits) if (inRect(q, h)) { h.act(); return; } // jump to a sprint
-    return; // clicks on the debug pause overlay never fire the gun
+    if (paused) {
+      if (debugMode) for (const h of debugHits) if (inRect(q, h)) { h.act(); return; } // jump to a sprint
+      if (TOUCH) paused = false;   // tap anywhere on the pause screen resumes
+      return; // clicks on the pause overlay never fire the gun
+    }
+    for (const h of hudHits) if (inRect(q, h)) { h.act(); return; } // chips / pause button
+    if (TOUCH) {
+      // thumb zones: left ~44% of the office is the move stick, the rest aims
+      if (q.x < VW * 0.44 && stick.id === null) {
+        stick.id = e.pointerId; stick.sx = stick.x = q.x; stick.sy = stick.y = q.y;
+      } else if (aim.id === null) {
+        aim.id = e.pointerId; aim.sx = aim.x = q.x; aim.sy = aim.y = q.y; aim.fire = true;
+      }
+      return;
+    }
+    mouse.down = true; // click/tap = fire along the current facing
+    return;
   }
-  mouse.down = true; // click/tap = fire along the current facing
 });
-addEventListener('pointerup', () => { mouse.down = false; });
+addEventListener('pointermove', (e) => {
+  if (e.pointerId === stick.id || e.pointerId === aim.id) {
+    const q = canvasPos(e);
+    if (e.pointerId === stick.id) { stick.x = q.x; stick.y = q.y; }
+    else { aim.x = q.x; aim.y = q.y; }
+  }
+});
+const releasePointer = (e) => {
+  mouse.down = false;
+  if (e.pointerId === stick.id) stick.id = null;
+  if (e.pointerId === aim.id) { aim.id = null; aim.fire = false; }
+};
+addEventListener('pointerup', releasePointer);
+addEventListener('pointercancel', releasePointer);
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // ---------------------------------------------------------------- state
 let state = 'menu'; // 'menu' | 'setup' | 'play' | 'over'
 let paused = false;
-let autoAim = false, autoShoot = false; // assist toggles (I / O) — persist across runs
+let autoAim = TOUCH, autoShoot = false; // assist toggles (I / O) — on touch, auto-aim starts on
 // Debug: flipped by the title-screen slider. When on, pausing shows a level
 // jumper on the left so boss difficulty can be tuned without grinding to it.
 let debugMode = false;
@@ -1367,12 +1410,17 @@ function update(dt) {
   bossBanner = Math.max(0, bossBanner - dt);
   const p = player;
 
-  // --- chair movement (rolly-chair physics: accelerate + drift) — arrows
+  // --- chair movement (rolly-chair physics: accelerate + drift) — arrows,
+  // or the left-thumb stick on touch
   let ax = 0, ay = 0;
   if (keys['arrowup']) ay -= 1;
   if (keys['arrowdown']) ay += 1;
   if (keys['arrowleft']) ax -= 1;
   if (keys['arrowright']) ax += 1;
+  if (stick.id !== null) {
+    const sdx = stick.x - stick.sx, sdy = stick.y - stick.sy;
+    if (Math.hypot(sdx, sdy) > 6) { ax += sdx; ay += sdy; } // deadzone, then full tilt
+  }
   if (ax || ay) {
     const len = Math.hypot(ax, ay);
     p.vx += ax / len * 933 * dt;
@@ -1387,7 +1435,14 @@ function update(dt) {
   // chair spin: D = clockwise, A = counter-clockwise; both held = facing
   // locked. With auto-aim on, the chair tracks the nearest ticket unless
   // A/D override. CHAIR_TURN stays the committed turn rate either way.
-  if (keys['a'] || keys['d']) {
+  // On touch, a right-thumb drag is twin-stick aim and outranks everything —
+  // it turns at 2× CHAIR_TURN so the thumb feels connected to the chair.
+  const aimLen = aim.id !== null ? Math.hypot(aim.x - aim.sx, aim.y - aim.sy) : 0;
+  if (aimLen > 10) {
+    const want = Math.atan2(aim.y - aim.sy, aim.x - aim.sx);
+    const diff = ((want - p.angle + Math.PI) % TAU + TAU) % TAU - Math.PI;
+    p.angle += clamp(diff, -CHAIR_TURN * 2 * dt, CHAIR_TURN * 2 * dt);
+  } else if (keys['a'] || keys['d']) {
     const spin = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
     p.angle += spin * CHAIR_TURN * dt;
   } else if (autoAim) {
@@ -1411,9 +1466,9 @@ function update(dt) {
   comboT = Math.max(0, comboT - dt);
   if (comboT === 0) combo = 1;
 
-  // --- firing: Space, click, or the auto-shoot assist
+  // --- firing: Space, click, the right thumb, or the auto-shoot assist
   p.fireCd -= dt;
-  if ((mouse.down || keys[' '] || autoShoot) && p.fireCd <= 0) {
+  if ((mouse.down || keys[' '] || autoShoot || aim.fire) && p.fireCd <= 0) {
     fire();
     p.fireCd = 1 / (p.rapidT > 0 ? 16 : 8);
   }
@@ -1863,7 +1918,7 @@ function draw() {
     ctx.fillText('PAUSED', VW / 2, y);
     ctx.font = '8px monospace';
     ctx.fillStyle = '#8f8fa8';
-    y += 14; ctx.fillText('(in a meeting — press P to escape)', VW / 2, y);
+    y += 14; ctx.fillText(TOUCH ? '(in a meeting — tap to escape)' : '(in a meeting — press P to escape)', VW / 2, y);
     drawBoard(y + 26, false); // a mid-run rank would be a lie — rows only
     if (debugMode) drawDebugLevels(); // left-column level jumper
   }
@@ -2010,21 +2065,65 @@ function drawHud() {
     ctx.fillRect(VW - 6 - cw, 36, cw, 2);
   }
 
-  // weapon bar: equipped language lit in its color
-  ctx.textAlign = 'left';
-  ctx.font = '8px monospace';
-  let lx = 6;
-  for (let i = 0; i < LANGS.length; i++) {
-    const s = (i + 1) + ':' + LANGS[i].name;
-    ctx.fillStyle = i === lang ? LANGS[i].color : '#5a6a90';
-    ctx.fillText(s, lx, VH - 25);
-    lx += ctx.measureText(s).width + 8;
+  hudHits.length = 0;
+  if (TOUCH) {
+    // touch weapon bar: three fat language chips, thumb-sized tap targets
+    ctx.font = 'bold 8px monospace';
+    let cx0 = 6;
+    for (let i = 0; i < LANGS.length; i++) {
+      const cw2 = 38, ch2 = 15, cy2 = VH - 20;
+      ctx.fillStyle = 'rgba(8,12,24,0.7)';
+      ctx.fillRect(cx0, cy2, cw2, ch2);
+      ctx.strokeStyle = i === lang ? LANGS[i].color : '#3a3f57';
+      ctx.strokeRect(cx0 + 0.5, cy2 + 0.5, cw2 - 1, ch2 - 1);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = i === lang ? LANGS[i].color : '#5a6a90';
+      ctx.fillText(LANGS[i].name, cx0 + cw2 / 2, cy2 + 10);
+      const li = i;
+      hudHits.push({ x: cx0 - 3, y: cy2 - 8, w: cw2 + 6, h: ch2 + 14, act: () => { lang = li; addFloater(p.x, p.y - 16, LANGS[li].name + ' EQUIPPED', LANGS[li].color); } });
+      cx0 += cw2 + 5;
+    }
+    // pause button, top edge clear of both thumbs
+    ctx.fillStyle = 'rgba(8,12,24,0.7)';
+    ctx.fillRect(VW - 150, 4, 16, 15);
+    ctx.strokeStyle = '#5a6a90';
+    ctx.strokeRect(VW - 149.5, 4.5, 15, 14);
+    ctx.fillStyle = '#8f8fa8';
+    ctx.fillRect(VW - 146, 7, 3, 9); ctx.fillRect(VW - 141, 7, 3, 9);
+    hudHits.push({ x: VW - 156, y: 0, w: 28, h: 26, act: () => { paused = true; loadBoard(); } });
+  } else {
+    // weapon bar: equipped language lit in its color
+    ctx.textAlign = 'left';
+    ctx.font = '8px monospace';
+    let lx = 6;
+    for (let i = 0; i < LANGS.length; i++) {
+      const s = (i + 1) + ':' + LANGS[i].name;
+      ctx.fillStyle = i === lang ? LANGS[i].color : '#5a6a90';
+      ctx.fillText(s, lx, VH - 25);
+      lx += ctx.measureText(s).width + 8;
+    }
+    // assist toggles (lit teal when on)
+    ctx.fillStyle = autoAim ? '#2fe4c8' : '#5a6a90';
+    ctx.fillText('[I] AUTO-AIM', 6, VH - 15);
+    ctx.fillStyle = autoShoot ? '#2fe4c8' : '#5a6a90';
+    ctx.fillText('[O] AUTO-SHOOT', 6, VH - 5);
   }
-  // assist toggles (lit teal when on)
-  ctx.fillStyle = autoAim ? '#2fe4c8' : '#5a6a90';
-  ctx.fillText('[I] AUTO-AIM', 6, VH - 15);
-  ctx.fillStyle = autoShoot ? '#2fe4c8' : '#5a6a90';
-  ctx.fillText('[O] AUTO-SHOOT', 6, VH - 5);
+
+  // live thumb feedback: stick base + knob, and the aim direction pip
+  if (TOUCH && !paused) {
+    if (stick.id !== null) {
+      ctx.strokeStyle = 'rgba(223,230,255,0.35)';
+      ctx.beginPath(); ctx.arc(stick.sx, stick.sy, 22, 0, TAU); ctx.stroke();
+      const dx = stick.x - stick.sx, dy = stick.y - stick.sy, l = Math.hypot(dx, dy) || 1;
+      const k = Math.min(l, 20);
+      ctx.fillStyle = 'rgba(223,230,255,0.45)';
+      ctx.beginPath(); ctx.arc(stick.sx + dx / l * k, stick.sy + dy / l * k, 9, 0, TAU); ctx.fill();
+    }
+    if (aim.id !== null) {
+      ctx.strokeStyle = 'rgba(47,228,200,0.35)';
+      ctx.beginPath(); ctx.arc(aim.sx, aim.sy, 16, 0, TAU); ctx.stroke();
+    }
+  }
 }
 
 function drawMenu() {
@@ -2053,15 +2152,22 @@ function drawMenu() {
   ctx.fillText('The sprint never ends. The backlog is coming for you.', cx, cy + 8);
 
   ctx.fillStyle = '#dfe6ff';
-  ctx.fillText('ARROWS — scoot the chair  ·  A / D — spin it  ·  SPACE — ship code', cx, cy + 30);
-  ctx.fillText('1 / 2 / 3 — switch language · letters matching a ticket stripe do ×2 damage', cx, cy + 41);
-  ctx.fillText('I — toggle auto-aim  ·  O — toggle auto-shoot', cx, cy + 52);
-  ctx.fillText('Chain kills & graze tickets for bonus SP  ·  P — pause / leaderboard  ·  M — mute', cx, cy + 63);
+  if (TOUCH) {
+    ctx.fillText('LEFT thumb — drag anywhere to scoot the chair', cx, cy + 30);
+    ctx.fillText('RIGHT thumb — hold to ship code, drag to aim it yourself', cx, cy + 41);
+    ctx.fillText('auto-aim is on · tap the chips to switch language (stripe match = ×2)', cx, cy + 52);
+    ctx.fillText('chain kills & graze tickets for bonus SP · ❚❚ — pause / leaderboard', cx, cy + 63);
+  } else {
+    ctx.fillText('ARROWS — scoot the chair  ·  A / D — spin it  ·  SPACE — ship code', cx, cy + 30);
+    ctx.fillText('1 / 2 / 3 — switch language · letters matching a ticket stripe do ×2 damage', cx, cy + 41);
+    ctx.fillText('I — toggle auto-aim  ·  O — toggle auto-shoot', cx, cy + 52);
+    ctx.fillText('Chain kills & graze tickets for bonus SP  ·  P — pause / leaderboard  ·  M — mute', cx, cy + 63);
+  }
 
   if (Math.floor(menuT * 2) % 2 === 0) {
     ctx.font = 'bold 10px monospace';
     ctx.fillStyle = '#3fe08a';
-    ctx.fillText('PRESS SPACE TO CLOCK IN', cx, cy + 92);
+    ctx.fillText(TOUCH ? 'TAP TO CLOCK IN' : 'PRESS SPACE TO CLOCK IN', cx, cy + 92);
   }
 
   // bottom-right: forward to the next page (create-your-dev)
@@ -2208,12 +2314,17 @@ function drawSetup() {
   ctx.fillStyle = '#080c18'; ctx.fillText('CREATE YOUR DEV', lx + 1, 19);
   ctx.fillStyle = '#ffd23f'; ctx.fillText('CREATE YOUR DEV', lx, 18);
 
-  // name field — it goes on the standup board and above the chair in-game
+  // name field — it goes on the standup board and above the chair in-game.
+  // No keyboard on touch: tapping the field opens the native prompt instead.
   const bw = 180, bh = 22, bx = lx - bw / 2, by = 28;
   ctx.fillStyle = 'rgba(8,12,24,0.85)';
   ctx.fillRect(bx, by, bw, bh);
   ctx.strokeStyle = '#2fe4c8';
   ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+  if (TOUCH) setupHits.push({ x: bx, y: by, w: bw, h: bh, act: () => {
+    const v = prompt('Your name on the standup board:', nameInput || '');
+    if (v !== null) nameInput = v.trim().slice(0, NAME_MAX);
+  } });
   const shown = nameInput || DEFAULT_NAME; // grey = the default you'd get anyway
   ctx.font = 'bold 12px monospace';
   ctx.fillStyle = nameInput ? '#dfe6ff' : '#5a6a90';
@@ -2348,7 +2459,7 @@ function drawGameOver() {
     ctx.textAlign = 'center';
     ctx.font = 'bold 10px monospace';
     ctx.fillStyle = '#3fe08a';
-    ctx.fillText('PRESS R TO GRAB ANOTHER COFFEE', cx, y + 26);
+    ctx.fillText(TOUCH ? 'TAP TO GRAB ANOTHER COFFEE' : 'PRESS R TO GRAB ANOTHER COFFEE', cx, y + 26);
   }
 }
 
@@ -2405,6 +2516,22 @@ function drawBoard(y, withRank) {
 // ---------------------------------------------------------------- loop
 let last = performance.now();
 let stopLoop = false; // set by the autotest so headless Chrome can settle and exit
+// The game is landscape-only on phones: portrait shows a rotate card over
+// everything and holds the run paused until the phone turns.
+function drawRotateGuard() {
+  if (!TOUCH || innerWidth >= innerHeight) return;
+  if (state === 'play' && !paused) { paused = true; loadBoard(); }
+  ctx.fillStyle = 'rgba(8,12,24,0.94)';
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillText('ROTATE YOUR PHONE', VW / 2, VH / 2 - 6);
+  ctx.font = '9px monospace';
+  ctx.fillStyle = '#8f8fa8';
+  ctx.fillText('the office only fits in landscape', VW / 2, VH / 2 + 14);
+}
+
 function loop(now) {
   // clamp: the first rAF timestamp can predate `last`, and a negative dt
   // rewinds every clock in the game
@@ -2413,6 +2540,7 @@ function loop(now) {
   if (!paused) update(dt);
   else menuT += dt;
   draw();
+  drawRotateGuard();
   if (!stopLoop) requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
@@ -2420,6 +2548,13 @@ requestAnimationFrame(loop);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && state === 'play' && !AUTOTEST) { paused = true; loadBoard(); }
 });
+
+// Phones: keep the screen awake mid-boss (iOS 16.4+; harmless elsewhere)
+if (TOUCH && navigator.wakeLock) {
+  const wake = () => navigator.wakeLock.request('screen').catch(() => { /* not granted — fine */ });
+  wake();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
+}
 
 // ---------------------------------------------------------------- autotest
 // Headless smoke test: open index.html?autotest=1 and check the console.

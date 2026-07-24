@@ -3,12 +3,17 @@
 <head>
 <meta charset="utf-8">
 <title>Jira Blaster</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden;
-    background: radial-gradient(1200px 700px at 50% -10%, #16161f, #0d0d12) #0d0d12; }
+    background: radial-gradient(1200px 700px at 50% -10%, #16161f, #0d0d12) #0d0d12;
+    /* phones: the canvas owns every gesture — no scroll, zoom, or callouts */
+    touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   body { display: flex; align-items: center; justify-content: center; }
-  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; touch-action: none; }
 </style>
 </head>
 <body>
@@ -16,6 +21,6 @@
 <!-- Bump ?v= whenever game.js changes: some CDNs pin non-HTML assets to a
      multi-hour browser cache, so the query string is the cache-buster.
      index.html itself is always revalidated. -->
-<script src="game.js?v=20"></script>
+<script src="game.js?v=21"></script>
 </body>
 </html>
