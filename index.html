@@ -13,9 +13,9 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<!-- Bump ?v= on every deploy: Cloudflare Pages pins game.js to a 4h browser
-     cache and ignores Cache-Control from _headers, so the query is the only
-     cache-buster. index.html itself is always revalidated. -->
+<!-- Bump ?v= whenever game.js changes: some CDNs pin non-HTML assets to a
+     multi-hour browser cache, so the query string is the cache-buster.
+     index.html itself is always revalidated. -->
 <script src="game.js?v=4"></script>
 </body>
 </html>

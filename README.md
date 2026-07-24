@@ -133,11 +133,11 @@ rank line there: a run still in progress hasn't got one. And a run that could
 *not* be posted — offline, opened from `file://`, or 0 SP — still gets the board
 section on the burnout screen rather than silence, saying why.
 
-- **Storage:** Cloudflare D1 (SQLite), database `stesti-pro-web-games`, table
-  `jira_blaster_scores` — `name` (primary key, `COLLATE NOCASE`), `score`,
-  `created_at`. One row per name: a better run overwrites it, a worse one is
-  ignored, so the timestamp is always the time of the run being shown.
-- **API:** a Pages Function in `stesti-pro-web/functions/api/jira-blaster/`.
+- **Storage:** a Cloudflare D1 (SQLite) table `jira_blaster_scores` — `name`
+  (primary key, `COLLATE NOCASE`), `score`, `created_at`. One row per name: a
+  better run overwrites it, a worse one is ignored, so the timestamp is always
+  the time of the run being shown.
+- **API:** a Cloudflare Pages Function behind `/api/jira-blaster/scores`.
   `GET` returns the top 10, `POST {name, score}` records a run and returns the
   board plus the run's rank. The browser never talks to D1 directly.
 - **Trust:** the game has no accounts, so the write is unauthenticated — anyone
@@ -147,12 +147,6 @@ section on the burnout screen rather than silence, saying why.
 - **Failure is silent and safe:** the game never waits on the network. Offline,
   from `file://`, or with D1 down it draws "board unreachable — this run was not
   saved" and plays exactly the same. `?autotest=1` never posts.
-- **Reading it by hand:**
-  ```bash
-  source stesti-pro-web/terraform/.env
-  npx wrangler d1 execute stesti-pro-web-games --remote -y \
-    --command "SELECT * FROM jira_blaster_scores ORDER BY score DESC LIMIT 20;"
-  ```
 
 ## Dev notes
 
@@ -177,7 +171,7 @@ section on the burnout screen rather than silence, saying why.
   of truth for every color in the *world*. The dev in the chair is the
   exception: their colors come from `look`, picked on the start screen.
 - The customizer's front-view character generator is ported into `game.js` as
-  `drawAvatar()` / `hairShape()` from `Player Customizer.html` (a bundled
+  `drawAvatar()` / `hairShape()` from `player_customizer.html` (a bundled
   artifact kept in the repo for reference — the game does not load it), with
   deliberate deviations from the source:
   - the source passed a hair-style *index* into name comparisons, so every
@@ -203,21 +197,13 @@ section on the burnout screen rather than silence, saying why.
     floating above the collar;
   - the source's beard option was dropped.
 
-## Deploy (stesti.pro)
+## Deploy
 
-Static content — per the STESTI.PRO conventions, copy `index.html` and `game.js`
-into `stesti-pro-web/public/game/jira-blaster/` and run `./deploy.sh` there:
+Two self-contained static files (`index.html` + `game.js`) plus the optional
+leaderboard Pages Function — host them on any static host. The game plays fully
+without the API; the board just draws "board unreachable" when it's absent.
 
-```bash
-cp index.html game.js ../stesti-pro-web/public/game/jira-blaster/
-cd ../stesti-pro-web && ./deploy.sh
-```
-
-Live at `https://stesti.pro/game/jira-blaster/`. `/game/*` is `noindex` in
-`public/_headers`, alongside the site's other non-CV pages.
-
-**Bump `?v=` on the `<script>` tag in `index.html` whenever `game.js` changes.**
-Cloudflare Pages pins non-HTML assets to `max-age=14400` and ignores a
-`Cache-Control` set in `_headers` (tested), so returning players would otherwise
-run the previous build for up to 4 hours. The HTML is always revalidated, so a
-new query string takes effect immediately.
+**When updating in place, bump `?v=` on the `<script>` tag in `index.html`.**
+Some CDNs (Cloudflare Pages among them) pin non-HTML assets to a multi-hour
+browser cache, so returning players would otherwise run the previous `game.js`.
+The HTML is always revalidated, so a new query string takes effect immediately.

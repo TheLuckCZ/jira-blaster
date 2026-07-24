@@ -175,7 +175,7 @@ function randomizeLook() {
 
 // ---------------------------------------------------------------- portrait
 // The same dev seen from the front, for the CREATE YOUR DEV screen — ported
-// from the Player Customizer's character() generator. Draws into a 100×120
+// from player_customizer.html's character() generator. Draws into a 100×120
 // box at `a` radians of turn (0 = facing the camera); the screen upscales it.
 // This is the only place pants and glasses are legible, so it is the
 // one view that shows every option.
