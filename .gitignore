@@ -1,2 +1,5 @@
 # Machine-local Claude Code settings (per-user, not shared)
 .claude/settings.local.json
+/.claude/
+/.idea/
+/visual_resources/
