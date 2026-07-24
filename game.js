@@ -30,6 +30,7 @@ const TAU = Math.PI * 2;
 const rnd = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const inRect = (q, h) => q.x >= h.x && q.x <= h.x + h.w && q.y >= h.y && q.y <= h.y + h.h;
 
 // ---------------------------------------------------------------- sprites
 // Pixel-art sprites defined as character grids ('.' = transparent).
@@ -711,6 +712,7 @@ addEventListener('keydown', (e) => {
   // The setup screen owns the keyboard — every printable key is text there, so
   // none of the shortcuts below (M, I, O, 1-3, P, R) may fire while typing.
   if (state === 'setup') { setupKey(e); return; }
+  if (state === 'board') { if (k === 'escape') state = 'menu'; return; }
   if (k === 'm') muted = !muted;
   if (k === 'i' && state === 'play') {
     autoAim = !autoAim;
@@ -742,7 +744,17 @@ function canvasPos(e) {
 
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
-  if (state === 'menu') { openSetup(); return; }
+  if (state === 'menu') {
+    const q = canvasPos(e);
+    for (const h of menuHits) if (inRect(q, h)) { h.act(); return; } // leaderboard / debug slider
+    openSetup();
+    return;
+  }
+  if (state === 'board') {
+    const q = canvasPos(e);
+    for (const h of menuHits) if (inRect(q, h)) { h.act(); return; } // the BACK button
+    return;
+  }
   if (state === 'setup') {
     // the click that opened the screen would land on whatever is under it
     if (menuT - setupShownAt < 0.4) return;
@@ -753,15 +765,26 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (state === 'over') { if (overTimer > 0.8) startGame(); return; }
+  if (state === 'play' && paused && debugMode) {
+    const q = canvasPos(e);
+    for (const h of debugHits) if (inRect(q, h)) { h.act(); return; } // jump to a sprint
+    return; // clicks on the debug pause overlay never fire the gun
+  }
   mouse.down = true; // click/tap = fire along the current facing
 });
 addEventListener('pointerup', () => { mouse.down = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // ---------------------------------------------------------------- state
-let state = 'menu'; // 'menu' | 'setup' | 'play' | 'over'
+let state = 'menu'; // 'menu' | 'setup' | 'board' | 'play' | 'over'
 let paused = false;
 let autoAim = false, autoShoot = false; // assist toggles (I / O) — persist across runs
+// Debug: flipped by the title-screen slider. When on, pausing shows a level
+// jumper on the left so boss difficulty can be tuned without grinding to it.
+let debugMode = false;
+const DEBUG_MAX_SPRINT = 34;
+const menuHits = [];   // title-screen click targets (the debug slider), rebuilt each frame
+const debugHits = [];  // debug pause-overlay click targets (the level list), rebuilt each frame
 let lang = 0; // equipped language (keys 1/2/3) — persists across runs
 let t = 0;              // in-game time
 let menuT = 0;          // menu animation clock
@@ -1276,11 +1299,17 @@ function damagePlayer(e) {
     state = 'over';
     overTimer = 0;
     mouse.down = false;
-    if (score > high) {
-      high = score;
-      try { localStorage.setItem('jiraBlasterHigh', String(high)); } catch (err) { /* ignore */ }
+    if (debugMode) {
+      // a debug run hops between levels — it never counts: no high score, no
+      // board POST. The board is still fetched so the death screen can show it.
+      loadBoard();
+    } else {
+      if (score > high) {
+        high = score;
+        try { localStorage.setItem('jiraBlasterHigh', String(high)); } catch (err) { /* ignore */ }
+      }
+      submitScore();
     }
-    submitScore();
     addParticles(player.x, player.y, '#f0b088', 24, 90);
     sfx.over();
   }
@@ -1340,7 +1369,10 @@ function update(dt) {
   if (hitFreeze > 0) {
     hitFreeze -= dt;
     if (hitFreeze <= 0 && culprit) {
-      if (culprit.type !== 'epic') {
+      // epics and bosses aren't consumed by hitting you — they keep fighting,
+      // and a boss must only die through killBoss (else bossParts is left with
+      // a ghost and the HUD later crashes on a null bossDef).
+      if (culprit.type !== 'epic' && !culprit.boss) {
         const idx = enemies.indexOf(culprit);
         if (idx >= 0) enemies.splice(idx, 1);
         addParticles(culprit.x, culprit.y, '#dfe6ff', 6, 70);
@@ -1634,6 +1666,7 @@ function draw() {
   ctx.drawImage(bgCanvas, 0, 0);
 
   if (state === 'menu') { drawMenu(); ctx.restore(); return; }
+  if (state === 'board') { drawBoardScreen(); ctx.restore(); return; }
   if (state === 'setup') { drawSetup(); ctx.restore(); return; }
 
   // pickups
@@ -1814,6 +1847,7 @@ function draw() {
     ctx.fillStyle = '#8f8fa8';
     y += 14; ctx.fillText('(in a meeting — press P to escape)', VW / 2, y);
     drawBoard(y + 26, false); // a mid-run rank would be a lie — rows only
+    if (debugMode) drawDebugLevels(); // left-column level jumper
   }
 
   if (state === 'over') drawGameOver();
@@ -1977,6 +2011,7 @@ function drawHud() {
 function drawMenu() {
   ctx.fillStyle = 'rgba(8,12,24,0.55)';
   ctx.fillRect(0, 0, VW, VH);
+  menuHits.length = 0;
   const cx = VW / 2, cy = VH / 2; // laid out from the centre so it survives a resolution change
 
   // spinning chair
@@ -2014,6 +2049,135 @@ function drawMenu() {
     ctx.fillStyle = '#8f8fa8';
     ctx.fillText('BEST: ' + high + ' SP', cx, cy + 112);
   }
+
+  ctx.font = 'bold 9px monospace';
+  uiButton(menuHits, cx - 80, 300, 160, 20, 'VIEW LEADERBOARD', '#2fe4c8', () => { state = 'board'; loadBoard(); });
+
+  drawDebugToggle(cx, 330); // the debug slider lives at the bottom of the title screen
+}
+
+// A bordered button that registers its own click target. The caller sets the
+// font first; `hits` is the list to push the target onto (menuHits, etc.).
+function uiButton(hits, x, y, w, h, label, fg, act) {
+  ctx.fillStyle = 'rgba(8,12,24,0.85)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = fg;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = fg;
+  ctx.fillText(label, x + w / 2, y + h / 2 + 3);
+  hits.push({ x, y, w, h, act });
+}
+
+// The leaderboard as its own screen, opened from the title menu. It reuses the
+// standup-board renderer; ESC or the BACK button returns to the menu.
+function drawBoardScreen() {
+  ctx.fillStyle = 'rgba(8,12,24,0.92)';
+  ctx.fillRect(0, 0, VW, VH);
+  menuHits.length = 0;
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillStyle = '#080c18'; ctx.fillText('LEADERBOARD', VW / 2 + 2, 46);
+  ctx.fillStyle = '#ffd23f'; ctx.fillText('LEADERBOARD', VW / 2, 44);
+
+  drawBoard(78, false); // the standup board draws its own subheader + rows
+
+  ctx.font = 'bold 10px monospace';
+  uiButton(menuHits, VW / 2 - 70, 302, 140, 22, 'ESC — BACK', '#5a6a90', () => { state = 'menu'; });
+}
+
+// A rounded pill path (for the classic on/off slider track).
+function pill(x, y, w, h) {
+  const r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// The title-screen debug switch. On → pausing shows a level jumper (see
+// drawDebugLevels) for tuning boss difficulty. Registers one generous tap
+// target over label + switch so a finger works as well as a mouse.
+function drawDebugToggle(cx, y) {
+  const tw = 26, th = 12, on = debugMode;
+  const tx = Math.round(cx - tw / 2);
+
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 8px monospace';
+  ctx.fillStyle = on ? '#3fe08a' : '#5a6a90';
+  ctx.fillText('DEBUG', tx - 8, y + th - 3);
+
+  pill(tx, y, tw, th);
+  ctx.fillStyle = on ? 'rgba(63,224,138,0.30)' : 'rgba(90,106,144,0.25)';
+  ctx.fill();
+  ctx.strokeStyle = on ? '#3fe08a' : '#5a6a90';
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(on ? tx + tw - th / 2 : tx + th / 2, y + th / 2, th / 2 - 1.5, 0, TAU);
+  ctx.fillStyle = on ? '#3fe08a' : '#8f8fa8';
+  ctx.fill();
+
+  if (on) {
+    ctx.textAlign = 'center';
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#5a6a90';
+    ctx.fillText('pause (P) in-game to jump to any sprint', cx, y + th + 12);
+  }
+
+  menuHits.push({ x: tx - 48, y: y - 8, w: 48 + tw + 10, h: th + 16, act: () => { debugMode = !debugMode; } });
+}
+
+// The left-hand level jumper drawn over the pause screen when debug is on.
+// One button per sprint, bosses called out by name; a click drops you in.
+function drawDebugLevels() {
+  debugHits.length = 0;
+  const x = 6, w = 172, rowH = 10, top = 16;
+
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 8px monospace';
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillText('DEBUG · JUMP TO', x + 2, top - 5);
+
+  ctx.font = 'bold 7px monospace';
+  for (let n = 1; n <= DEBUG_MAX_SPRINT; n++) {
+    const yy = top + (n - 1) * rowH;
+    const boss = n % 5 === 0;
+    const label = boss
+      ? 'BOSS ' + (n / 5) + ' · ' + BOSSES[(n / 5 - 1) % BOSSES.length].name
+      : 'SPRINT ' + n;
+    const cur = n === sprint;
+    ctx.fillStyle = boss ? 'rgba(255,90,110,0.16)' : 'rgba(63,224,138,0.10)';
+    ctx.fillRect(x, yy, w, rowH - 1);
+    ctx.strokeStyle = cur ? '#ffd23f' : boss ? '#ff5a6e' : '#3a6a52';
+    ctx.strokeRect(x + 0.5, yy + 0.5, w - 1, rowH - 2);
+    ctx.fillStyle = cur ? '#ffd23f' : boss ? '#ff9aa6' : '#dfe6ff';
+    ctx.fillText(label, x + 5, yy + rowH - 3);
+    debugHits.push({ x, y: yy, w, h: rowH - 1, act: () => jumpToSprint(n) });
+  }
+}
+
+// Debug: drop straight into sprint n (or its boss). Clears the field and scales
+// the player's coffee cups to the promotions they'd have earned reaching it, so
+// a boss is fought at its real difficulty. The normal break→wave step spawns it.
+function jumpToSprint(n) {
+  paused = false;
+  sprint = n;
+  phase = 'break';
+  breakTimer = 0.6;
+  bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
+  bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
+  spawnQueue = []; spawnTimer = 0; meetingCd = 6;
+  combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
+  clearMsg = '';
+  player.maxHp = 3 + Math.floor((n - 1) / 5); // one promotion per boss cleared before now
+  player.hp = player.maxHp;
+  player.x = VW / 2; player.y = VH / 2; player.vx = 0; player.vy = 0;
+  player.invuln = 1; player.rapidT = 0; player.duckT = 0;
 }
 
 // The portrait is redrawn only when the turn frame or an option changes —
@@ -2187,8 +2351,8 @@ function drawBoard(y, withRank) {
   if (board.status !== 'ok' || !board.rows.length) {
     ctx.fillStyle = '#8f8fa8';
     y += 13;
-    ctx.fillText(board.status === 'sending' ? 'posting your run…'
-      : board.status === 'error' ? 'board unreachable — this run was not saved'
+    ctx.fillText(board.status === 'sending' ? (withRank ? 'posting your run…' : 'loading the board…')
+      : board.status === 'error' ? (withRank ? 'board unreachable — this run was not saved' : 'board unreachable')
         : 'no runs on the board yet', cx, y);
     return y;
   }
