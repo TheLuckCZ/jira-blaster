@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jira Blaster</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: radial-gradient(1200px 700px at 50% -10%, #16161f, #0d0d12) #0d0d12; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<!-- Bump ?v= on every deploy: Cloudflare Pages pins game.js to a 4h browser
+     cache and ignores Cache-Control from _headers, so the query is the only
+     cache-buster. index.html itself is always revalidated. -->
+<script src="game.js?v=4"></script>
+</body>
+</html>
