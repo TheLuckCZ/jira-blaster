@@ -11,7 +11,10 @@
 // every common display (2× at 720p, 3× at 1080p, 4× at 1440p, 6× at 4K), so
 // pixels stay square and sharp. Raising this shrinks every element on screen
 // and widens the arena — world speeds below are sized to match it.
-const VW = 640, VH = 360;
+// VH is fixed; VW widens on phones to match the device's landscape aspect
+// (see relayout()) so the office fills the screen edge-to-edge.
+let VW = 640;
+const VH = 360;
 const canvas = document.getElementById('game');
 canvas.width = VW; canvas.height = VH;
 const ctx = canvas.getContext('2d');
@@ -23,8 +26,16 @@ ctx.imageSmoothingEnabled = false;
 let TOUCH = false;
 try { TOUCH = matchMedia('(pointer: coarse)').matches; } catch (e) { /* ancient browser */ }
 
+// On touch, visualViewport is the honest size — innerWidth/Height can be
+// stale right after an iOS orientation change.
+function viewSize() {
+  const vv = self.visualViewport;
+  return TOUCH && vv ? [vv.width, vv.height] : [innerWidth, innerHeight];
+}
+
 function resize() {
-  const raw = Math.min(innerWidth / VW, innerHeight / VH);
+  const [w, h] = viewSize();
+  const raw = Math.min(w / VW, h / VH);
   // Desktop: whole-number upscale for crisp pixels. Touch: fractional, so a
   // phone in landscape fills the screen instead of dropping to a small 1×.
   const s = TOUCH ? Math.max(0.5, raw) : Math.max(1, Math.floor(raw));
@@ -603,7 +614,8 @@ const IMG = {
 };
 
 // ---------------------------------------------------------------- office floor
-const bgCanvas = (() => {
+let bgCanvas;
+function buildBg() {
   const c = cvOf(VW, VH), g = c.getContext('2d');
   let seed = 1337;
   const R = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
@@ -622,8 +634,34 @@ const bgCanvas = (() => {
   // furniture around the edges (decor only — nothing collides)
   g.drawImage(deskImg, 64, 4); g.drawImage(deskImg, VW - 120, 4);
   g.drawImage(whiteboardImg, VW - 110, VH - 20);
-  return c;
-})();
+  bgCanvas = c;
+}
+buildBg();
+
+// Phones: widen the office's INTERNAL width to the device's landscape aspect
+// (long/short edge, so the answer is the same in either orientation), then
+// rebuild the floor. The playfield genuinely fills the screen instead of
+// pillarboxing a 16:9 box. Runs again on resize/rotate — iOS reports stale
+// sizes right after an orientation change, so rotation retries twice.
+function relayout() {
+  if (TOUCH) {
+    const [w, h] = viewSize();
+    const aspect = Math.max(w, h) / Math.min(w, h);
+    const want = Math.min(840, Math.max(640, Math.round(VH * aspect / 2) * 2));
+    if (want !== VW) {
+      VW = want;
+      canvas.width = VW;                  // resets context state…
+      ctx.imageSmoothingEnabled = false;  // …so pixel-crisp goes back on
+      buildBg();
+      if (player) player.x = Math.min(player.x, VW - player.r);
+    }
+  }
+  resize();
+}
+addEventListener('resize', relayout);
+addEventListener('orientationchange', () => { setTimeout(relayout, 80); setTimeout(relayout, 400); });
+if (self.visualViewport) visualViewport.addEventListener('resize', relayout);
+relayout();
 
 // ---------------------------------------------------------------- audio
 let actx = null, muted = false;
@@ -2307,7 +2345,10 @@ function drawSetup() {
   ctx.fillStyle = 'rgba(8,12,24,0.78)';
   ctx.fillRect(0, 0, VW, VH);
   setupHits.length = 0;
-  const lx = 116; // centre of the left column
+  // the screen was laid out for a 640 canvas; on a wider phone VW it slides
+  // to the centre (hits inherit the shift — they're built from these vars)
+  const off = Math.max(0, Math.round((VW - 640) / 2));
+  const lx = 116 + off; // centre of the left column
 
   ctx.textAlign = 'center';
   ctx.font = 'bold 13px monospace';
@@ -2359,7 +2400,7 @@ function drawSetup() {
   ctx.fillText('IN GAME', lx, 348);
 
   // ---- appearance rows
-  const px0 = 236, labelR = 316, chipX = 322;
+  const px0 = 236 + off, labelR = 316 + off, chipX = 322 + off;
   ctx.textAlign = 'left';
   ctx.font = 'bold 9px monospace';
   ctx.fillStyle = '#7fe0ff';
@@ -2402,13 +2443,13 @@ function drawSetup() {
     setupHits.push({ x, y, w, h, act });
   };
   ctx.font = 'bold 10px monospace';
-  btn(236, 208, 396, 24, 'TAB — RANDOMIZE', '#8a63ff', randomizeLook);
+  btn(236 + off, 208, 396, 24, 'TAB — RANDOMIZE', '#8a63ff', randomizeLook);
 
   ctx.textAlign = 'center';
   ctx.font = '8px monospace';
   ctx.fillStyle = '#8f8fa8';
-  ctx.fillText('type your name  ·  ↑↓ pick a row  ·  ←→ change it', 434, 250);
-  ctx.fillText('pants only show here — the game sees you from above', 434, 263);
+  ctx.fillText('type your name  ·  ↑↓ pick a row  ·  ←→ change it', 434 + off, 250);
+  ctx.fillText('pants only show here — the game sees you from above', 434 + off, 263);
 
   // preview turntable: freeze the spin, or step the angle a frame at a time to
   // study the dev from any side (a step arrow freezes on its own) — sits under
@@ -2485,8 +2526,9 @@ function drawBoard(y, withRank) {
     return y;
   }
 
-  // columns: rank | name | score | when
-  const R = 204, N = 212, S = 344, W = 452;
+  // columns: rank | name | score | when — centred when VW is phone-wide
+  const bo = Math.max(0, Math.round((VW - 640) / 2));
+  const R = 204 + bo, N = 212 + bo, S = 344 + bo, W = 452 + bo;
   const me = playerName.toLowerCase();
   for (let i = 0; i < board.rows.length; i++) {
     const row = board.rows[i];
