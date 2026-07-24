@@ -23,8 +23,9 @@ ctx.imageSmoothingEnabled = false;
 // True on phones/tablets (coarse pointer). Drives the whole touch scheme:
 // left-half drag = move stick, right-half drag = aim + fire, HUD tap targets,
 // fractional canvas scaling, auto-aim on by default. `let` so tests can force it.
-let TOUCH = false;
-try { TOUCH = matchMedia('(pointer: coarse)').matches; } catch (e) { /* ancient browser */ }
+// `?touch=1` forces it on for desktop debugging of the phone code paths.
+let TOUCH = /[?&]touch/.test(location.search);
+try { TOUCH = TOUCH || matchMedia('(pointer: coarse)').matches; } catch (e) { /* ancient browser */ }
 
 // On touch, visualViewport is the honest size — innerWidth/Height can be
 // stale right after an iOS orientation change.
@@ -653,7 +654,9 @@ function relayout() {
       canvas.width = VW;                  // resets context state…
       ctx.imageSmoothingEnabled = false;  // …so pixel-crisp goes back on
       buildBg();
-      if (player) player.x = Math.min(player.x, VW - player.r);
+      // NOTE: no `player` access here — relayout() runs at module load,
+      // before that binding exists, and touching it was a boot-killing TDZ
+      // ReferenceError on phones. update() clamps the position every frame.
     }
   }
   resize();
