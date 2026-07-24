@@ -76,7 +76,7 @@ type — one glance is full information:
 | **Epic** (L) | large purple card | 15 | slow | splits into 3 Stories on death |
 | **Hotfix** | small flashing orange card | 3 | very fast | no wind-up — it screams in (siren) |
 | **Meeting invite** | large grey card | ∞ | drifts | non-lethal, but it blocks your letters (cover) |
-| **Bosses** | oversized named cards | huge | varies | every 5th sprint — see [Bosses](#bosses) |
+| **Bosses** | oversized named cards | huge | varies | every 4th sprint — see [Bosses](#bosses) |
 
 - **Telegraphs:** tickets materialize with a 0.4s pulsing flash + ding (inert
   until real), draw a dotted approach trail toward your chair, and flash a red
@@ -95,13 +95,13 @@ type — one glance is full information:
   scores worse than committing — aggression is the whole meta.
 - Waves are **sprints** and scale density only (spawn interval decays 8% per
   sprint, floor 0.3s) — nothing new after sprint 3: 1 = Bugs, 2 = +Stories,
-  3 = +Epics & Hotfixes. Every 5th sprint is a **boss** (see below).
+  3 = +Epics & Hotfixes. Every 4th sprint is a **boss** (see below).
 - Drops: **coffee** (+1 cup), **energy drink** (crunch mode — double fire
   rate), **rubber duck** (shield that deflects tickets).
 
 ## Bosses
 
-Every 5th sprint escalates to a named nightmare from the dev world — **alone on
+Every 4th sprint escalates to a named nightmare from the dev world — **alone on
 screen**: no edge burst, no drifting meetings, no backlog. It gets a title card,
 a name and HP bar in the HUD, and pays triple the sprint bonus plus a guaranteed
 coffee + duck + energy drink on death.

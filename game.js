@@ -79,7 +79,7 @@ const disc = (g, cx, cy, r, c, cond) => {
 // that screen, and the 34×34 top-down chair sprite you actually play as.
 const SKINS  = ['#ffd9b3', '#f0b088', '#d69a6a', '#a86b43', '#71482c', '#4a2f1e'];
 const HAIRC  = ['#2b1d12', '#5a3a22', '#a8642f', '#d9b45a', '#3a3a44', '#c94f6b', '#3f6fd0', '#e8e8f0'];
-const HAIRS  = ['short', 'buzz', 'long', 'bun', 'mohawk', 'bald'];
+const HAIRS  = ['short', 'buzz', 'bun', 'mohawk', 'bald'];
 const SHIRTS = ['#e0554f', '#3d9bff', '#2fbf62', '#ffb43d', '#8a63ff', '#20c9b0', '#2a2a33', '#f2f2f7'];
 const PANTS  = ['#3a4a63', '#2a2a33', '#5a3a24', '#4f6f3a', '#7a3a5a'];
 const CHAIRS = ['#ff8a3d', '#e0554f', '#3d9bff', '#2fbf62', '#8a63ff', '#2a2a33'];
@@ -89,7 +89,7 @@ const LAPS   = ['#c7d0dd', '#e0554f', '#2a2a33', '#8a63ff', '#20c9b0'];
 // `key` indexes into `look`; whichever list is present gives the value count.
 const LOOK_GROUPS = [
   { key: 'skin',    label: 'SKIN',       colors: SKINS },
-  { key: 'hairS',   label: 'HAIR',       words: ['SHORT', 'BUZZ', 'LONG', 'BUN', 'MOHAWK', 'BALD'] },
+  { key: 'hairS',   label: 'HAIR',       words: ['SHORT', 'BUZZ', 'BUN', 'MOHAWK', 'BALD'] },
   { key: 'hairC',   label: 'HAIR COLOR', colors: HAIRC },
   { key: 'glasses', label: 'GLASSES',    words: ['NO', 'YES'] },
   { key: 'shirt',   label: 'SHIRT',      colors: SHIRTS },
@@ -144,11 +144,6 @@ function buildDevImg(o) {
   rf(g, cx - 6, cy - 9, 3, 7, shirt); rf(g, cx + 3, cy - 9, 3, 7, shirt);
   rf(g, cx - 6, cy - 10, 3, 2, skin); rf(g, cx + 3, cy - 10, 3, 2, skin);
   // head: hair covers the back of the skull, the face peeks out to the north.
-  // Long hair spills past the head's own outline, so it gets a wider one.
-  if (style === 'long') {
-    disc(g, cx, cy - 4, 6, PAL.outline, (dx, dy) => dy >= 0 && dx * dx + dy * dy > 20);
-    disc(g, cx, cy - 4, 5, hair, (dx, dy) => dy >= 0);
-  }
   disc(g, cx, cy - 4, 5, PAL.outline, (dx, dy) => dx * dx + dy * dy > 12);
   disc(g, cx, cy - 4, 4, style === 'bald' ? skin : style === 'buzz' ? shade(hair, 0.75) : hair);
   disc(g, cx, cy - 4, 4, skin, (dx, dy) => dy < -1);
@@ -175,253 +170,228 @@ function randomizeLook() {
 }
 
 // ---------------------------------------------------------------- portrait
-// The same dev seen from the front, for the CREATE YOUR DEV screen — ported
-// from player_customizer.html's character() generator. Draws into a 100×120
-// box at `a` radians of turn (0 = facing the camera); the screen upscales it.
-// This is the only place pants and glasses are legible, so it is the
-// one view that shows every option.
+// The same dev seen from the front, for the CREATE YOUR DEV screen. Draws
+// into a 100×120 box at `a` radians of turn (0 = facing the camera).
+//
+// Painter's algorithm: every part carries a camera depth — forward·cosθ −
+// right·sinθ at its body position — and the parts render far-to-near, so
+// occlusion is correct at every angle of the spin and nothing pops in front
+// of what should cover it. The figure is a seated ~4.5-heads cartoon with
+// volumed capsule limbs, a real neck, and a chair with cushion, tilted
+// backrest, gas lift and a 5-star base that turns with the body.
+// This is the only place pants and glasses are legible, so it is the one
+// view that shows every option.
 function drawAvatar(g, a, o) {
   const S = Math.sin(a), C = Math.cos(a);
   const OUT = '#1c1320';
   const CX = 50;
-  const skin = SKINS[o.skin], skinS = shade(skin, 0.78);
-  const hair = HAIRC[o.hairC], hairS = shade(hair, 0.72);
-  const shirt = SHIRTS[o.shirt], shirtS = shade(shirt, 0.78), shirtH = shade(shirt, 1.2);
-  const pants = PANTS[o.pants], pantsS = shade(pants, 0.78);
-  const chair = CHAIRS[o.chair], chairS = shade(chair, 0.74), chairH = shade(chair, 1.25);
-  const lap = LAPS[o.lap], lapS = shade(lap, 0.74), lapH = shade(lap, 1.3);
+  const skin = SKINS[o.skin], skinS = shade(skin, 0.8);
+  const hair = HAIRC[o.hairC], hairS = shade(hair, 0.74);
+  const shirt = SHIRTS[o.shirt], shirtS = shade(shirt, 0.78), shirtH = shade(shirt, 1.18);
+  const pants = PANTS[o.pants], pantsS = shade(pants, 0.76);
+  const chair = CHAIRS[o.chair], chairS = shade(chair, 0.72), chairH = shade(chair, 1.22);
+  const lap = LAPS[o.lap], lapH = shade(lap, 1.25), lapS = shade(lap, 0.72);
+  const style = HAIRS[o.hairS];
 
-  const poly = (pts, c, oc) => {
-    g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
+  // body space → screen: f = forward, r = the wearer's right, both in px
+  const X = (f, r) => CX + f * S + r * C;
+  const D = (f, r) => f * C - r * S;              // + = toward the camera
+
+  g.lineJoin = 'round'; g.lineCap = 'round';
+  const path = (fn, fill, ow) => {
+    g.beginPath(); fn();
+    if (ow) { g.strokeStyle = OUT; g.lineWidth = ow; g.stroke(); }
+    g.fillStyle = fill; g.fill();
+  };
+  const ellip = (x, y, rx, ry, fill, ow) => path(() => g.ellipse(x, y, rx, ry, 0, 0, TAU), fill, ow);
+  const quad = (pts, fill, ow) => path(() => {
+    g.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
-    g.closePath(); if (oc) { g.strokeStyle = oc; g.lineWidth = 1.6; g.stroke(); } g.fillStyle = c; g.fill();
-  };
-  const oval = (cx, cy, r, c, oc) => { g.beginPath(); g.arc(cx, cy, r, 0, 7); if (oc) { g.strokeStyle = oc; g.lineWidth = 1.6; g.stroke(); } g.fillStyle = c; g.fill(); };
-  const rrect = (px, py, w, h, r, c, oc) => {
-    g.beginPath(); g.moveTo(px + r, py);
-    g.arcTo(px + w, py, px + w, py + h, r); g.arcTo(px + w, py + h, px, py + h, r);
-    g.arcTo(px, py + h, px, py, r); g.arcTo(px, py, px + w, py, r); g.closePath();
-    if (oc) { g.strokeStyle = oc; g.lineWidth = 1.6; g.stroke(); } g.fillStyle = c; g.fill();
-  };
-
-  // anchors
-  const shoulderR = 15, hipR = 11, backOff = 9;
-  const shoulderY = 46, hipY = 66, baseY = 99;
-  const fwdX = S; // screen-x per unit of body-forward
-  // Comfy recline: the torso leans back into the backrest — hips stay put,
-  // shoulders sit `lean` px behind them (against facing), the head a bit more.
-  const lean = 6;
-  const topX = CX - fwdX * lean;
-  const rShX = topX + shoulderR * C, lShX = topX - shoulderR * C;
-  const rHipX = CX + hipR * C, lHipX = CX - hipR * C;
-  const isBack = C < -0.02;
-
-  // ---- chair base (5-star, rotates) ----
-  // Screen y points down, so `+a` would walk the star clockwise seen from
-  // above — while the body's fwdX = sin(a) turn is counter-clockwise. The
-  // customizer shipped with that mismatch (base visibly counter-spinning the
-  // person); the star takes -a so both rotate together.
-  const legs = [];
-  for (let i = 0; i < 5; i++) {
-    const ang = i * (Math.PI * 2 / 5) - a;
-    legs.push({ dx: Math.cos(ang), dy: Math.sin(ang) });
-  }
-  legs.sort((p, q) => p.dy - q.dy);
-  for (const l of legs) {
-    const ex = CX + l.dx * 26, ey = baseY + l.dy * 9;
-    g.strokeStyle = OUT; g.lineWidth = 6; g.beginPath(); g.moveTo(CX, baseY); g.lineTo(ex, ey); g.stroke();
-    g.strokeStyle = chairS; g.lineWidth = 3.5; g.beginPath(); g.moveTo(CX, baseY); g.lineTo(ex, ey); g.stroke();
-    oval(ex, ey + 1, 3.2, OUT); oval(ex, ey + 0.5, 2.2, shade(chair, 0.6));
-  }
-  // ---- gas cylinder + seat ----
-  // One unit, called from the paint-order block: the back view draws the legs
-  // first and lets this cover everything above the knee.
-  const drawSeat = () => {
-    rrect(CX - 3, hipY + 4, 6, baseY - hipY - 3, 1.5, chairS, OUT);
-    g.fillStyle = chairH; g.fillRect(CX - 2, hipY + 5, 1.6, baseY - hipY - 5);
-    g.save(); g.translate(CX, hipY + 2); g.scale(1, 0.5);
-    oval(0, 0, 18, chair, OUT); g.restore();
-    g.save(); g.translate(CX, hipY + 1); g.scale(1, 0.5); oval(0, 0, 16, chairH); g.restore();
+    g.closePath();
+  }, fill, ow);
+  const rrect = (x, y, w, h, r, fill, ow) => path(() => {
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+  }, fill, ow);
+  const limb = (x1, y1, x2, y2, w, fill) => {
+    g.strokeStyle = OUT; g.lineWidth = w + 2.6; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.strokeStyle = fill; g.lineWidth = w; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
   };
 
-  const drawBackrest = () => {
-    const bx = CX - fwdX * backOff;
-    const bw = 10 + 14 * Math.abs(C);
-    const top = shoulderY - 6, h = hipY - top + 2;
-    // tilted back around its base, so the recline is the chair's, not a slouch
-    g.save();
-    g.translate(bx, hipY); g.rotate(-fwdX * 0.14); g.translate(-bx, -hipY);
-    rrect(bx - bw / 2, top, bw, h, 5, chairS, OUT);
-    rrect(bx - bw / 2 + 2, top + 2, Math.max(2, bw - 4), h - 4, 4, chair);
-    g.fillStyle = chairH; g.fillRect(bx - bw / 2 + 3, top + 3, Math.max(1, bw * 0.16), h - 6);
-    // lumbar seam
-    g.fillStyle = chairS; g.fillRect(bx - bw / 2 + 2, top + h / 2, Math.max(2, bw - 4), 1);
-    // headrest pad
-    rrect(bx - bw / 2 + 1, top - 8, Math.max(3, bw - 2), 7, 3, chairS, OUT);
-    g.restore();
-  };
+  const lean = 4.5;                 // recline: shoulders + head sit behind the hips
+  const shY = 48, hipY = 73, seatY = 77;
+  const hx = CX - S * lean, hy = 30;     // head centre
 
-  const drawLegs = () => {
-    // Seated at a true right angle: the thigh runs level along body-forward,
-    // the shin drops straight down from the knee. (The customizer projected
-    // the legs through a sagittal transform whose fSY = 0.6 sloped the thigh
-    // ~35° toward the floor, so the knee never read as 90° on screen.)
-    const thighLen = 17, shinLen = 21;
-    for (const sgn of [-1, 1]) {
-      const hipx = CX + sgn * hipR * C;
-      const hipy = hipY - 2;
-      const kx = hipx + thighLen * fwdX * 0.95 + sgn * 4 * C;
-      const ky = hipy + 4 + 2 * Math.abs(C); // a small foreshortening drop, not a slope
-      const fx = kx;
-      const fy = ky + shinLen;
-      // thigh
-      g.lineCap = 'round';
-      g.strokeStyle = OUT; g.lineWidth = 11; g.beginPath(); g.moveTo(hipx, hipy); g.lineTo(kx, ky); g.stroke();
-      g.strokeStyle = pants; g.lineWidth = 8; g.beginPath(); g.moveTo(hipx, hipy); g.lineTo(kx, ky); g.stroke();
-      g.strokeStyle = pantsS; g.lineWidth = 2.5; g.beginPath(); g.moveTo(hipx, hipy); g.lineTo(kx, ky); g.stroke();
-      // shin
-      g.strokeStyle = OUT; g.lineWidth = 9; g.beginPath(); g.moveTo(kx, ky); g.lineTo(fx, fy); g.stroke();
-      g.strokeStyle = pantsS; g.lineWidth = 6; g.beginPath(); g.moveTo(kx, ky); g.lineTo(fx, fy); g.stroke();
-      // knee cap highlight
-      oval(kx, ky, 2, pants, OUT);
-      // shoe (points forward)
-      const toe = fwdX >= 0 ? 1 : -1;
-      rrect(Math.min(fx, fx + toe * 4) - 3, fy - 2, 7 + Math.abs(S) * 3, 5, 2, '#2f2740', OUT);
+  const parts = [];
+  const add = (d, fn) => parts.push({ d, fn });
+
+  // soft contact shadow, under everything
+  ellip(CX, 107.5, 28, 4.2, 'rgba(10,8,16,0.35)');
+
+  // ---- 5-star base + gas lift, just behind the body core ----
+  add(-1.5, () => {
+    // the star takes -a so it turns with the body, not against it
+    const spokes = [];
+    for (let i = 0; i < 5; i++) { const t = i * TAU / 5 - a; spokes.push({ c: Math.cos(t), s: Math.sin(t) }); }
+    spokes.sort((p, q) => p.s - q.s);            // far spokes first
+    for (const l of spokes) {
+      const ex = CX + l.c * 23, ey = 102 + l.s * 7.5;
+      limb(CX, 100.5, ex, ey, 4, chairS);
+      ellip(ex, ey + 1.4, 2.9, 2.2, '#2b2734', 1.6);   // caster
     }
-    g.lineCap = 'butt';
-  };
+    quad([[CX - 3.2, seatY + 3], [CX + 3.2, seatY + 3], [CX + 2.5, 100.5], [CX - 2.5, 100.5]], '#3a3a46', 1.8);
+    g.fillStyle = '#5a5a6a'; g.fillRect(CX - 1.7, seatY + 4.5, 1.7, 94 - seatY);
+  });
 
-  const drawTorso = () => {
-    poly([[lShX, shoulderY], [rShX, shoulderY], [rHipX + 1, hipY], [lHipX - 1, hipY]], shirt, OUT);
-    // shading on far side + center seam
-    const litSgn = S >= 0 ? 1 : -1;
-    g.fillStyle = shirtS;
-    poly([[topX, shoulderY], [Math.max(rShX, lShX), shoulderY], [rHipX + 1, hipY], [CX, hipY]], (litSgn > 0 ? shirtS : shirt));
-    g.fillStyle = shirtH; g.fillRect(topX - 6 * Math.abs(C), shoulderY + 2, 2, 14);
-    // collar
-    rrect(topX - 4 * Math.abs(C) - 1, shoulderY - 2, 8 * Math.abs(C) + 2, 4, 1.5, shirtS, OUT);
-  };
-
-  const drawArms = () => {
-    // Two segments with a real elbow at 90°: the upper arm hangs straight
-    // down from the reclined shoulder, the forearm runs LEVEL to the hands on
-    // the laptop — elbow and hands share a height. The source drew one
-    // straight shoulder-to-hand stick, which left the arms stubby and
-    // elbow-less.
-    for (const sgn of [-1, 1]) {
-      const shx = topX + sgn * shoulderR * C * 0.9;
-      const shy = shoulderY + 3;
-      const hy = hipY - 6;
-      const ex = shx - fwdX * 2 + sgn * 1.5 * C;   // elbow, tucked slightly back
-      const ey = hy;                               // same height as the hands = 90°
-      const hx = CX + fwdX * 12 + sgn * 6 * C;     // hand on the keyboard
-      g.lineCap = 'round';
-      // upper arm (sleeve)
-      g.strokeStyle = OUT; g.lineWidth = 8; g.beginPath(); g.moveTo(shx, shy); g.lineTo(ex, ey); g.stroke();
-      g.strokeStyle = shirt; g.lineWidth = 5.5; g.beginPath(); g.moveTo(shx, shy); g.lineTo(ex, ey); g.stroke();
-      // forearm (shaded sleeve, slightly thinner — gives the elbow its bend)
-      g.strokeStyle = OUT; g.lineWidth = 7; g.beginPath(); g.moveTo(ex, ey); g.lineTo(hx, hy); g.stroke();
-      g.strokeStyle = shirtS; g.lineWidth = 4.5; g.beginPath(); g.moveTo(ex, ey); g.lineTo(hx, hy); g.stroke();
-      oval(hx, hy, 2.6, skin, OUT); // hand
+  // ---- backrest, tilted a touch further back than the torso ----
+  add(D(-9.5, 0), () => {
+    const bw = Math.hypot(13 * C, 4 * S);        // slab: wide face-on, thin edge-on
+    const bx = X(-8, 0), tx = X(-11.5, 0);
+    limb(X(-7, 0), seatY + 1, X(-9, 0), 66, 4.4, chairS);   // seat→slab support
+    quad([[bx - bw, 72], [bx + bw, 72], [tx + bw, 45], [tx - bw, 45]], chair, 2.2);
+    const iw = bw - 2.5;
+    if (C > 0.15) {         // cushioned front face + lumbar seam
+      quad([[bx - iw, 69.5], [bx + iw, 69.5], [tx + iw, 47.5], [tx - iw, 47.5]], chairH);
+      g.strokeStyle = chairS; g.lineWidth = 1.2;
+      g.beginPath(); g.moveTo((bx + tx) / 2 - iw, 58.5); g.lineTo((bx + tx) / 2 + iw, 58.5); g.stroke();
+    } else if (C < -0.15) { // hard shell seen from behind
+      quad([[bx - iw, 69.5], [bx + iw, 69.5], [tx + iw, 47.5], [tx - iw, 47.5]], chairS);
     }
-    g.lineCap = 'butt';
-  };
+  });
 
-  const drawLaptop = () => {
-    const cx2 = CX + fwdX * 13;
-    const ly = hipY - 7;
-    const lw = 7 + 20 * Math.abs(C);
-    // base/keyboard deck (tilted)
-    poly([[cx2 - lw / 2, ly + 6], [cx2 + lw / 2, ly + 6], [cx2 + lw / 2 - 1, ly + 10], [cx2 - lw / 2 + 1, ly + 10]], lapS, OUT);
-    // lid (back faces camera when front)
-    rrect(cx2 - lw / 2, ly - 8, lw, 14, 2, lap, OUT);
-    if (C > 0.15) { oval(cx2, ly - 1, 2.2, lapH); } // logo on back
-    else if (C < -0.15) { g.fillStyle = '#8fe6ff'; g.fillRect(cx2 - lw / 2 + 2, ly - 6, Math.max(1, lw - 4), 10); }
-    g.fillStyle = lapH; g.fillRect(cx2 - lw / 2 + 1, ly - 7, Math.max(1, lw * 0.12), 12);
+  // ---- legs: hip → knee → ankle → shoe, with volume ----
+  const dLegR = D(11, 6.5), dLegL = D(11, -6.5);
+  const leg = (r, far) => () => {
+    const thigh = far ? pantsS : pants, shin = far ? shade(pants, 0.66) : pantsS;
+    limb(X(2, r * 5.5), hipY - 1, X(15, r * 6.5), 70.5, 7.4, thigh);
+    limb(X(15, r * 6.5), 70.5, X(16, r * 6.5), 93, 5.2, shin);
+    ellip(X(19.5, r * 5.8), 96.8, 3 + 2.6 * Math.abs(S), 2.7, far ? '#211c2b' : '#2f2940', 1.7);
   };
+  add(dLegR, leg(1, dLegR < dLegL));
+  add(dLegL, leg(-1, dLegL <= dLegR));
 
-  const drawHead = () => {
-    // rests back with the recline — a touch further than the shoulders
-    g.save(); g.translate(-fwdX * (lean + 3), 0);
-    // hy puts the neck's bottom edge exactly on the torso top (shoulderY):
-    // (hy + hr - 2) + 6 = 46 — no gap between neck and shirt
-    const hy = 31, hr = 11;
-    const faceShift = S * 5;
-    oval(CX, hy, hr, skin, OUT);
-    // ear on trailing side
-    if (Math.abs(S) > 0.25) { const es = S > 0 ? -1 : 1; oval(CX + es * (hr - 1), hy + 1, 2.4, skinS, OUT); }
-    if (isBack) {
-      // back of head: hair blob
-      hairShape(g, oval, rrect, CX, hy, hr, hair, hairS, OUT, o.hairS, 'back', C, S);
-    } else {
-      // eyes
-      const eyeC = '#241a2e';
-      const sep = 3.4 * Math.abs(C) + 0.6;
-      const ecx = CX + faceShift, ey = hy - 1;
-      if (o.glasses) {
-        g.strokeStyle = '#241a2e'; g.lineWidth = 1.2;
-        g.strokeRect(ecx - sep - 2.4, ey - 1.6, 3.2, 3.2);
-        if (sep > 1.2) g.strokeRect(ecx + sep - 0.8, ey - 1.6, 3.2, 3.2);
-        g.beginPath(); g.moveTo(ecx - sep + 0.8, ey); g.lineTo(ecx + sep - 0.8, ey); g.stroke();
-        g.fillStyle = eyeC; g.fillRect(ecx - sep - 1, ey, 1.4, 1.4); if (sep > 1.2) g.fillRect(ecx + sep + 0.4, ey, 1.4, 1.4);
-      } else {
-        g.fillStyle = eyeC; g.fillRect(ecx - sep - 0.7, ey - 0.5, 1.6, 2); if (sep > 1) g.fillRect(ecx + sep - 0.9, ey - 0.5, 1.6, 2);
+  // ---- arms: shoulder → dropped elbow → hand on the keyboard ----
+  const dArmR = D(5, 11.5), dArmL = D(5, -11.5);
+  const arm = (r, far) => () => {
+    const sleeve = far ? shirtS : shirt, hand = far ? skinS : skin;
+    const ex = X(3.5, r * 10.5), hx2 = X(11, r * 4.2);
+    limb(X(-5, r * 11.5), 50, ex, 62, 6, sleeve);   // upper arm (sleeve)
+    limb(ex, 62, hx2, 65.5, 4.4, hand);             // bare forearm
+    ellip(hx2, 66, 2.6, 2.3, hand, 1.6);            // hand
+  };
+  add(dArmR, arm(1, dArmR < dArmL));
+  add(dArmL, arm(-1, dArmL <= dArmR));
+
+  // ---- body core: seat cushion, neck, torso, collar (depth 0) ----
+  add(0, () => {
+    const sw = Math.hypot(15.5 * C, 12 * S);
+    quad([[CX - sw, seatY - 4], [CX + sw, seatY - 4], [CX + sw * 0.9, seatY + 4], [CX - sw * 0.9, seatY + 4]], chair, 2.2);
+    g.strokeStyle = chairH; g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(CX - sw * 0.8, seatY - 2.2); g.lineTo(CX + sw * 0.8, seatY - 2.2); g.stroke();
+    limb(hx, 38, hx, 50, 5.4, skinS);               // neck, tucked under the jaw
+    const wSh = Math.hypot(13.5 * C, 8.5 * S), wHip = Math.hypot(11.5 * C, 8 * S);
+    quad([[hx - wSh, shY - 2], [hx + wSh, shY - 2], [CX + wHip, hipY + 2], [CX - wHip, hipY + 2]], shirt, 2.2);
+    g.strokeStyle = shirtS; g.lineWidth = 1.2;      // hem
+    g.beginPath(); g.moveTo(CX - wHip * 0.85, hipY - 1); g.lineTo(CX + wHip * 0.85, hipY - 1); g.stroke();
+    ellip(hx, shY - 0.5, 4.6, 2.3, shirtH, 1.6);    // collar
+  });
+
+  // ---- head unit: constant depth between torso (0) and the backrest when
+  //      it swings near (+9.5), so the face is always over the shirt and the
+  //      chair back correctly overlaps the head from behind ----
+  add(2.5, () => {
+    const earX = (r) => hx + r * 9.3 * C;
+    const nearR = S >= 0 ? -1 : 1;                  // which ear faces the camera
+    // Ears foreshorten with the turn: edge-on slivers at dead front/back,
+    // widest in profile. The inner fold only reads once the ear is side-on.
+    const earW = 0.8 + 1.9 * Math.abs(S);
+    const ear = (r) => {
+      ellip(earX(r), 31.5, earW, 2.7 + 0.5 * Math.abs(S), skin, 1.6);
+      if (Math.abs(S) > 0.45) { g.fillStyle = skinS; g.fillRect(earX(r) - 0.7, 30.6, 1.4, 1.9); }
+    };
+    const knot = () => ellip(hx - 7.5 * S, 20.5, 3.7, 3.3, hair, 1.8);
+    const earsBehind = C < -0.05;
+
+    // the far ear only shows near dead front/back — mid-turn it is occluded
+    if (Math.abs(C) > 0.55) ear(-nearR);
+    if (earsBehind) ear(nearR);
+    if (style === 'bun' && C > 0) knot();
+
+    ellip(hx, hy, 10.5, 11, skin, 2.2);             // skull
+    if (style !== 'bald' && style !== 'mohawk') {
+      // hair fills the whole crown, then the face is re-exposed toward the
+      // camera — the back of the head is never bare and there is no cap seam.
+      // The cover matches the skull exactly (an offset leaves a seam line at
+      // the nape) and the carve is generous, so the hair is a thin cap, not
+      // half a ball worn on the head.
+      ellip(hx, hy, 10.5, 11, style === 'buzz' ? shade(hair, 0.8) : hair);
+      if (C > -0.05) {
+        ellip(hx + S * 4.6, hy + 2.1, 9.9, 10.1, skin);
+        if (style !== 'buzz') { g.fillStyle = hair; g.fillRect(hx + S * 5 - 4.4, hy - 8.4, 8.8, 3); }
       }
-      // brows
-      g.fillStyle = hairS; g.fillRect(ecx - sep - 1.4, ey - 3, 2.4, 1); if (sep > 1.2) g.fillRect(ecx + sep - 1, ey - 3, 2.4, 1);
-      // nose (profile bump)
-      if (Math.abs(S) > 0.5) { const ns = S > 0 ? 1 : -1; g.fillStyle = skinS; g.fillRect(CX + ns * (hr - 1), hy, 2, 2); }
-      // mouth
-      g.fillStyle = skinS; g.fillRect(ecx - 1.6, hy + 4, 3.4, 1);
-      // hair (front)
-      hairShape(g, oval, rrect, CX, hy, hr, hair, hairS, OUT, o.hairS, 'front', C, S);
     }
-    // neck
-    g.fillStyle = skinS; g.fillRect(CX - 2.5, hy + hr - 2, 5, 6);
-    g.restore();
-  };
+    if (C <= 0 && style === 'bun') knot();
 
-  // ---- paint order ----
-  // Facing away, the legs point beyond the chair: drawn first, under the
-  // cylinder and seat, so the thighs disappear behind the chair and only the
-  // shins hang into view below the seat. Facing us, they go on top as usual.
-  if (isBack) drawLegs();
-  drawSeat();
-  if (!isBack) drawBackrest();
-  if (!isBack) drawLegs();
-  drawTorso();
-  drawArms();
-  drawHead();
-  if (C > -0.02) drawLaptop();
-  if (isBack) drawBackrest();
+    if (C > -0.05) {                                 // face features
+      const fx2 = hx + S * 6.4, eyeC = '#241a2e';
+      const two = C > 0.32;
+      const sep = 2.1 + 2.6 * Math.max(C, 0);
+      const eyes = two ? [fx2 - sep, fx2 + sep] : [hx + S * 7.3];
+      g.fillStyle = style === 'bald' ? shade(skin, 0.62) : hairS;   // brows
+      for (const ex2 of eyes) g.fillRect(ex2 - 1.8, 26.2, 3.6, 1.3);
+      if (o.glasses) {
+        g.strokeStyle = eyeC; g.lineWidth = 1.3;
+        for (const ex2 of eyes) g.strokeRect(ex2 - 2.3, 27.4, 4.6, 4);
+        g.beginPath();
+        if (two) { g.moveTo(eyes[0] + 2.3, 28.8); g.lineTo(eyes[1] - 2.3, 28.8); }
+        else { g.moveTo(eyes[0] - Math.sign(S || 1) * 2.6, 29.2); g.lineTo(earX(nearR), 30.2); }
+        g.stroke();
+      }
+      g.fillStyle = eyeC;
+      for (const ex2 of eyes) g.fillRect(ex2 - 0.9, 28.6, 1.8, 1.9);
+      g.strokeStyle = skinS; g.lineWidth = 1.3;      // mouth
+      g.beginPath(); g.moveTo(fx2 - 1.9, 38.2); g.quadraticCurveTo(fx2, 39.3, fx2 + 1.9, 38.2); g.stroke();
+    }
+    if (style === 'mohawk') {                        // crest along the midline
+      if (Math.abs(S) < 0.22) rrect(hx - 1.7, 12.6, 3.4, 8.6, 1.5, hair, 1.8);
+      else {
+        const top = (f) => 19.6 + Math.pow(f / 10.5, 2) * 6.5;
+        const pts = [];
+        for (let f = -8; f <= 6.01; f += 2) pts.push([hx + f * S, top(f) - 7]);
+        for (let f = 6; f >= -8.01; f -= 2) pts.push([hx + f * S, top(f) + 0.6]);
+        quad(pts, hair, 1.8);
+      }
+    }
+    if (!earsBehind) ear(nearR);
+  });
+
+  // ---- laptop: base slab on the thighs, lid hinged at the far edge and tilted
+  //      outward (its top leans away from the dev). The display faces the DEV:
+  //      from the front we see the lid back with the logo, and the glowing
+  //      screen only shows over their shoulder when they face away ----
+  add(D(13.5, 0) + 0.01, () => {
+    const w = 3.5 + 13.5 * Math.abs(C);
+    const rx = X(8.5, 0), fx2 = X(15.5, 0);
+    quad([[rx - w * 0.9, 63.5], [rx + w * 0.9, 63.5], [fx2 + w, 67.2], [fx2 - w, 67.2]], lapS, 2);
+    const bx = X(16, 0), tx = X(19.5, 0);          // top leans forward, past the hinge
+    quad([[bx - w, 66], [bx + w, 66], [tx + w * 0.96, 50.5], [tx - w * 0.96, 50.5]], lap, 2.2);
+    if (C > 0.15) {
+      ellip((bx + tx) / 2, 58, 2.3, 2.3, lapH);     // logo on the lid back
+    } else if (C < -0.15) {                         // the screen, seen from behind the dev
+      const iw = w - 2.2;
+      quad([[bx - iw, 63.8], [bx + iw, 63.8], [tx + iw, 52.3], [tx - iw, 52.3]], '#bfeaff');
+      g.fillStyle = 'rgba(90,140,190,0.55)';        // little UI rows on the screen
+      g.fillRect(tx - iw + 1, 54, Math.max(1, iw), 1.4);
+      g.fillRect(tx - iw + 1, 57, Math.max(1, iw * 1.4), 1.4);
+    }
+  });
+
+  parts.sort((p, q) => p.d - q.d);
+  for (const p of parts) p.fn();
+  g.lineJoin = 'miter'; g.lineCap = 'butt';
 }
 
-// `style` is an index into HAIRS. The customizer passed that index straight
-// into name comparisons, so every style silently rendered as 'short'; resolving
-// it here is the one deliberate change to the ported art.
-function hairShape(g, oval, rrect, CX, hy, hr, hair, hairS, OUT, style, side, C, S) {
-  const fs = S * 5;
-  if (HAIRS[style] === 'bald') return;
-  if (side === 'back') {
-    if (HAIRS[style] === 'buzz') { oval(CX, hy - 1, hr, hairS); return; }
-    oval(CX, hy - 1, hr + 0.5, hair, OUT);
-    if (HAIRS[style] === 'long') { rrect(CX - hr, hy, hr * 2, 12, 3, hair, OUT); }
-    if (HAIRS[style] === 'bun') { oval(CX, hy - hr - 1, 3.5, hairS, OUT); }
-    if (HAIRS[style] === 'mohawk') { g.fillStyle = hairS; g.fillRect(CX - 1.5, hy - hr - 4, 3, 6); }
-    return;
-  }
-  // front hair caps the top of the face
-  if (HAIRS[style] === 'buzz') {
-    g.fillStyle = hairS; g.beginPath(); g.arc(CX + fs * 0.5, hy - 1, hr - 0.5, Math.PI, 0); g.fill(); return;
-  }
-  g.fillStyle = hair; g.beginPath(); g.arc(CX + fs * 0.4, hy - 1, hr + 0.5, Math.PI + 0.3, -0.3); g.fill();
-  g.strokeStyle = OUT; g.lineWidth = 1.2; g.beginPath(); g.arc(CX + fs * 0.4, hy - 1, hr + 0.5, Math.PI + 0.3, -0.3); g.stroke();
-  // fringe
-  g.fillStyle = hair; g.fillRect(CX + fs - 4, hy - hr + 2, 8, 3);
-  if (HAIRS[style] === 'long') { rrect(CX - hr - 0.5, hy - 2, 3, 13, 1.5, hairS, OUT); rrect(CX + hr - 2.5, hy - 2, 3, 13, 1.5, hairS, OUT); }
-  if (HAIRS[style] === 'bun') { oval(CX - S * 3, hy - hr - 1, 3.2, hairS, OUT); }
-  if (HAIRS[style] === 'mohawk') { g.fillStyle = hairS; g.fillRect(CX + fs - 1.5, hy - hr - 4, 3, 6); }
-}
 
 // Jira ticket cards in the kit's language: outlined paper card, colored
 // header band, grey title lines, size pips. Size IS the threat tier.
@@ -509,17 +479,6 @@ const duckImg = sprite([
 ], { y: '#ffd23f', e: '#1c1c1c', o: '#ff8a5c' });
 
 // Office props from the kit (background decor only — nothing collides).
-const plantImg = (() => {
-  const c = cvOf(16, 20), g = c.getContext('2d');
-  rf(g, 5, 12, 6, 7, PAL.outline); rf(g, 6, 13, 4, 5, PAL.pot);
-  rf(g, 6, 13, 4, 1, PAL.rim); rf(g, 6, 15, 4, 1, PAL.outline);
-  const L = PAL.leaf;
-  rf(g, 7, 3, 2, 10, L); rf(g, 4, 5, 2, 6, L); rf(g, 10, 5, 2, 6, L);
-  rf(g, 5, 7, 2, 5, L); rf(g, 9, 7, 2, 5, L); rf(g, 6, 4, 1, 1, L); rf(g, 9, 4, 1, 1, L);
-  rf(g, 7, 2, 1, 1, PAL.rim); rf(g, 4, 5, 1, 1, PAL.outline); rf(g, 11, 5, 1, 1, PAL.outline);
-  return c;
-})();
-
 const whiteboardImg = (() => {
   const c = cvOf(26, 16), g = c.getContext('2d');
   rf(g, 1, 1, 24, 12, PAL.outline); rf(g, 2, 2, 22, 10, PAL.paper);
@@ -652,10 +611,6 @@ const bgCanvas = (() => {
   g.globalAlpha = 1;
   for (let i = 0; i < 70; i++) rf(g, Math.floor(R() * VW), Math.floor(R() * VH), 1, 1, R() < 0.5 ? PAL.floorLine : PAL.base);
   // furniture around the edges (decor only — nothing collides)
-  g.drawImage(plantImg, 8, 30); g.drawImage(plantImg, VW - 24, 30);
-  // no plant bottom-left: that corner belongs to the weapon bar and the
-  // AUTO-AIM / AUTO-SHOOT lines, and decor behind them kills legibility.
-  g.drawImage(plantImg, VW - 24, VH - 24);
   g.drawImage(deskImg, 64, 4); g.drawImage(deskImg, VW - 120, 4);
   g.drawImage(whiteboardImg, VW - 110, VH - 20);
   return c;
@@ -712,7 +667,6 @@ addEventListener('keydown', (e) => {
   // The setup screen owns the keyboard — every printable key is text there, so
   // none of the shortcuts below (M, I, O, 1-3, P, R) may fire while typing.
   if (state === 'setup') { setupKey(e); return; }
-  if (state === 'board') { if (k === 'escape') state = 'menu'; return; }
   if (k === 'm') muted = !muted;
   if (k === 'i' && state === 'play') {
     autoAim = !autoAim;
@@ -750,11 +704,6 @@ canvas.addEventListener('pointerdown', (e) => {
     openSetup();
     return;
   }
-  if (state === 'board') {
-    const q = canvasPos(e);
-    for (const h of menuHits) if (inRect(q, h)) { h.act(); return; } // the BACK button
-    return;
-  }
   if (state === 'setup') {
     // the click that opened the screen would land on whatever is under it
     if (menuT - setupShownAt < 0.4) return;
@@ -776,7 +725,7 @@ addEventListener('pointerup', () => { mouse.down = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // ---------------------------------------------------------------- state
-let state = 'menu'; // 'menu' | 'setup' | 'board' | 'play' | 'over'
+let state = 'menu'; // 'menu' | 'setup' | 'play' | 'over'
 let paused = false;
 let autoAim = false, autoShoot = false; // assist toggles (I / O) — persist across runs
 // Debug: flipped by the title-screen slider. When on, pausing shows a level
@@ -811,6 +760,10 @@ let nameInput = playerName;
 let setupShownAt = 0;  // menuT when the screen opened — swallows the click that opened it
 let setupRow = 0;      // which LOOK_GROUPS row the arrow keys are on
 const setupHits = [];  // click targets, rebuilt by drawSetup() every frame
+// Setup preview turntable: `devAngle` advances at DEV_SPIN while not frozen, and
+// drives BOTH the front turnaround and the top-down sprite so they stay locked.
+// Freezing (the FREEZE button, or a step arrow) lets you inspect a fixed angle.
+let devAngle = 0, devSpinPaused = false, lastDevT = 0;
 
 // The single most important tuning knob: chair turn rate vs. telegraph time.
 // π rad/s → a worst-case 180° aim takes 1.0s; the 1.5s wind-up plus letter
@@ -820,6 +773,9 @@ const WINDUP_TIME = 1.5;      // seconds-from-contact when a ticket flashes red
 const CHAIN_WINDOW = 1.2;     // seconds between kills to keep the chain alive
 const CHAIN_MAX = 8;
 const GRAZE_PX = 8;           // near-miss distance that pays out
+// Shared turnaround speed for the two dev previews on the setup screen (front
+// portrait + top-down sprite), so one spin of each takes exactly the same time.
+const DEV_SPIN = 1.9;         // rad/s — a brisk spin (TAU / 1.9 ≈ 3.3s per turn)
 
 // Size IS the type — one glance = full information.
 const ENEMY_TYPES = {
@@ -839,7 +795,7 @@ const ENEMY_TYPES = {
   flaky:    { hp: 85,  sp: 44, r: 9,  score: 3000, img: IMG.flaky,    wobAmp: 0.7,  wobFreq: [3, 5], boss: 'flaky' },
 };
 
-// Every 5th sprint is a boss instead of a Sprint Planning burst: one named
+// Every 4th sprint is a boss instead of a Sprint Planning burst: one named
 // nightmare from the dev world, alone on screen — no edge burst, no meetings.
 // The roster cycles, and each full lap makes them tougher.
 const BOSSES = [
@@ -938,6 +894,8 @@ function fmtWhen(iso) {
 function openSetup() {
   state = 'setup';
   setupShownAt = menuT;
+  devSpinPaused = false;   // always arrive spinning
+  lastDevT = menuT;        // so the first frame adds ~0, not a jump
 }
 
 function setupKey(e) {
@@ -988,7 +946,7 @@ function startGame() {
 // Escalating density, never new rules after sprint 3:
 // sprint 1 = Bugs, 2 = +Stories (meetings start drifting in), 3 = +Epics & Hotfixes.
 function buildSprint(n) {
-  if (n % 5 === 0) return []; // boss sprint: the boss is the whole wave
+  if (n % 4 === 0) return []; // boss sprint: the boss is the whole wave
   const q = [];
   const count = Math.min(6 + n * 3, 40);
   for (let i = 0; i < count; i++) {
@@ -1034,7 +992,7 @@ function bossInit(e) {
 }
 
 function spawnBoss(n) {
-  const step = Math.floor(n / 5) - 1;
+  const step = Math.floor(n / 4) - 1;
   const def = BOSSES[step % BOSSES.length];
   const mul = 1 + 0.55 * Math.floor(step / BOSSES.length); // each full lap is meaner
   bossDef = def;
@@ -1455,7 +1413,7 @@ function update(dt) {
       spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1));
       spawnTimer = 0;
       sfx.wave();
-      if (sprint % 5 === 0) spawnBoss(sprint); // boss sprints are the boss, alone
+      if (sprint % 4 === 0) spawnBoss(sprint); // boss sprints are the boss, alone
     }
   } else {
     spawnTimer -= dt;
@@ -1465,12 +1423,12 @@ function update(dt) {
     }
     // meeting invites drift in on their own calendar — but never mid-boss
     meetingCd -= dt;
-    if (sprint >= 2 && sprint % 5 !== 0 && meetingCd <= 0) {
+    if (sprint >= 2 && sprint % 4 !== 0 && meetingCd <= 0) {
       if (enemies.filter(e => e.type === 'meeting').length < 2) spawnEnemy('meeting');
       meetingCd = rnd(8, 14);
     }
     if (!spawnQueue.length && !enemies.some(e => e.type !== 'meeting')) {
-      const wasBoss = sprint % 5 === 0;
+      const wasBoss = sprint % 4 === 0;
       const bonus = (50 + sprint * 25) * (wasBoss ? 3 : 1);
       score += bonus;
       if (wasBoss) { bossDef = null; bossMaxHp = 0; }
@@ -1478,9 +1436,9 @@ function update(dt) {
       addFloater(p.x, p.y - 14, '+' + bonus, '#3fe08a');
       sprint++;
       phase = 'break';
-      breakTimer = sprint % 5 === 0 ? 3.5 : 3; // extra beat before a boss
-      // every 5 sprints cleared = a promotion: +1 max cup, poured full
-      if ((sprint - 1) % 5 === 0) {
+      breakTimer = sprint % 4 === 0 ? 3.5 : 3; // extra beat before a boss
+      // every 4 sprints cleared = a promotion: +1 max cup, poured full
+      if ((sprint - 1) % 4 === 0) {
         p.maxHp++;
         p.hp++;
         addFloater(p.x, p.y - 24, 'PROMOTION! +1 MAX CUP', '#ffd23f');
@@ -1666,7 +1624,6 @@ function draw() {
   ctx.drawImage(bgCanvas, 0, 0);
 
   if (state === 'menu') { drawMenu(); ctx.restore(); return; }
-  if (state === 'board') { drawBoardScreen(); ctx.restore(); return; }
   if (state === 'setup') { drawSetup(); ctx.restore(); return; }
 
   // pickups
@@ -1823,8 +1780,8 @@ function draw() {
     ctx.fillStyle = '#dfe6ff';
     ctx.fillText('SPRINT ' + sprint, VW / 2, VH / 2 + 2);
     ctx.font = '8px monospace';
-    if (sprint % 5 === 0) {
-      const next = BOSSES[(Math.floor(sprint / 5) - 1) % BOSSES.length];
+    if (sprint % 4 === 0) {
+      const next = BOSSES[(Math.floor(sprint / 4) - 1) % BOSSES.length];
       ctx.fillStyle = '#ff8a5c';
       ctx.fillText('ESCALATED TO ' + next.name + ' — ' + Math.ceil(breakTimer) + '…', VW / 2, VH / 2 + 14);
     } else {
@@ -2037,21 +1994,17 @@ function drawMenu() {
   ctx.fillText('ARROWS — scoot the chair  ·  A / D — spin it  ·  SPACE — ship code', cx, cy + 30);
   ctx.fillText('1 / 2 / 3 — switch language · letters matching a ticket stripe do ×2 damage', cx, cy + 41);
   ctx.fillText('I — toggle auto-aim  ·  O — toggle auto-shoot', cx, cy + 52);
-  ctx.fillText('Chain kills & graze tickets for bonus SP  ·  P — pause  ·  M — mute', cx, cy + 63);
+  ctx.fillText('Chain kills & graze tickets for bonus SP  ·  P — pause / leaderboard  ·  M — mute', cx, cy + 63);
 
   if (Math.floor(menuT * 2) % 2 === 0) {
     ctx.font = 'bold 10px monospace';
     ctx.fillStyle = '#3fe08a';
     ctx.fillText('PRESS SPACE TO CLOCK IN', cx, cy + 92);
   }
-  if (high > 0) {
-    ctx.font = '8px monospace';
-    ctx.fillStyle = '#8f8fa8';
-    ctx.fillText('BEST: ' + high + ' SP', cx, cy + 112);
-  }
 
-  ctx.font = 'bold 9px monospace';
-  uiButton(menuHits, cx - 80, 300, 160, 20, 'VIEW LEADERBOARD', '#2fe4c8', () => { state = 'board'; loadBoard(); });
+  // bottom-right: forward to the next page (create-your-dev)
+  ctx.font = 'bold 10px monospace';
+  uiButton(menuHits, VW - 132, VH - 34, 120, 24, 'CREATE DEV ›', '#3fe08a', openSetup);
 
   drawDebugToggle(cx, 330); // the debug slider lives at the bottom of the title screen
 }
@@ -2067,24 +2020,6 @@ function uiButton(hits, x, y, w, h, label, fg, act) {
   ctx.fillStyle = fg;
   ctx.fillText(label, x + w / 2, y + h / 2 + 3);
   hits.push({ x, y, w, h, act });
-}
-
-// The leaderboard as its own screen, opened from the title menu. It reuses the
-// standup-board renderer; ESC or the BACK button returns to the menu.
-function drawBoardScreen() {
-  ctx.fillStyle = 'rgba(8,12,24,0.92)';
-  ctx.fillRect(0, 0, VW, VH);
-  menuHits.length = 0;
-
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 18px monospace';
-  ctx.fillStyle = '#080c18'; ctx.fillText('LEADERBOARD', VW / 2 + 2, 46);
-  ctx.fillStyle = '#ffd23f'; ctx.fillText('LEADERBOARD', VW / 2, 44);
-
-  drawBoard(78, false); // the standup board draws its own subheader + rows
-
-  ctx.font = 'bold 10px monospace';
-  uiButton(menuHits, VW / 2 - 70, 302, 140, 22, 'ESC — BACK', '#5a6a90', () => { state = 'menu'; });
 }
 
 // A rounded pill path (for the classic on/off slider track).
@@ -2146,9 +2081,9 @@ function drawDebugLevels() {
   ctx.font = 'bold 7px monospace';
   for (let n = 1; n <= DEBUG_MAX_SPRINT; n++) {
     const yy = top + (n - 1) * rowH;
-    const boss = n % 5 === 0;
+    const boss = n % 4 === 0;
     const label = boss
-      ? 'BOSS ' + (n / 5) + ' · ' + BOSSES[(n / 5 - 1) % BOSSES.length].name
+      ? 'BOSS ' + (n / 4) + ' · ' + BOSSES[(n / 4 - 1) % BOSSES.length].name
       : 'SPRINT ' + n;
     const cur = n === sprint;
     ctx.fillStyle = boss ? 'rgba(255,90,110,0.16)' : 'rgba(63,224,138,0.10)';
@@ -2174,7 +2109,7 @@ function jumpToSprint(n) {
   spawnQueue = []; spawnTimer = 0; meetingCd = 6;
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   clearMsg = '';
-  player.maxHp = 3 + Math.floor((n - 1) / 5); // one promotion per boss cleared before now
+  player.maxHp = 3 + Math.floor((n - 1) / 4); // one promotion per boss cleared before now
   player.hp = player.maxHp;
   player.x = VW / 2; player.y = VH / 2; player.vx = 0; player.vy = 0;
   player.invuln = 1; player.rapidT = 0; player.duckT = 0;
@@ -2225,21 +2160,29 @@ function drawSetup() {
     ctx.fillRect(Math.round(lx + ctx.measureText(shown).width / 2) + 3, by + 5, 1, 13);
   }
 
-  // portrait: the customizer's 16-frame turnaround, spinning on its own
+  // advance the shared turntable angle (menuT always ticks, so this is robust
+  // regardless of game-pause state); freezing simply stops the accumulation
+  if (!devSpinPaused) devAngle += (menuT - lastDevT) * DEV_SPIN;
+  lastDevT = menuT;
+  const frame = ((Math.floor(devAngle / TAU * 16) % 16) + 16) % 16;
+
+  // portrait: the customizer's 16-frame turnaround
   ctx.fillStyle = 'rgba(47,228,200,0.10)';
   ctx.beginPath(); ctx.ellipse(lx, 262, 58, 11, 0, 0, TAU); ctx.fill();
-  ctx.drawImage(portrait(Math.floor(menuT / 0.13) % 16), 0, 2, PW, 114, lx - PW, 52, PW * 2, 228);
+  ctx.drawImage(portrait(frame), 0, 2, PW, 114, lx - PW, 52, PW * 2, 228);
 
-  // and the top-down sprite you actually play as, so the match is visible here
+  // and the top-down sprite you actually play as, directly under the front view
+  // on the same vertical axis, driven by the same devAngle so they stay locked
   ctx.save();
-  ctx.translate(40, 244);
-  ctx.rotate(menuT * 0.9);
+  ctx.translate(lx, 306);
+  ctx.rotate(devAngle);
   ctx.scale(2, 2);
   ctx.drawImage(devImg, -17, -17);
   ctx.restore();
+  ctx.textAlign = 'center';
   ctx.font = '8px monospace';
   ctx.fillStyle = '#5a6a90';
-  ctx.fillText('IN GAME', 40, 290);
+  ctx.fillText('IN GAME', lx, 348);
 
   // ---- appearance rows
   const px0 = 236, labelR = 316, chipX = 322;
@@ -2284,17 +2227,28 @@ function drawSetup() {
     ctx.fillText(label, x + w / 2, y + h / 2 + 3);
     setupHits.push({ x, y, w, h, act });
   };
-  ctx.font = 'bold 9px monospace';
-  btn(236, 212, 190, 20, 'TAB — RANDOMIZE', '#8a63ff', randomizeLook);
-  btn(434, 212, 198, 20, 'ESC — BACK', '#5a6a90', () => { state = 'menu'; });
-  ctx.font = 'bold 11px monospace';
-  btn(236, 240, 396, 26, 'START SHIFT >', '#3fe08a', confirmSetup);
+  ctx.font = 'bold 10px monospace';
+  btn(236, 208, 396, 24, 'TAB — RANDOMIZE', '#8a63ff', randomizeLook);
 
   ctx.textAlign = 'center';
   ctx.font = '8px monospace';
   ctx.fillStyle = '#8f8fa8';
-  ctx.fillText('type your name  ·  ↑↓ pick a row  ·  ←→ change it  ·  ENTER to start', VW / 2, 326);
-  ctx.fillText('…or just click. Pants only show here — the game sees you from above.', VW / 2, 340);
+  ctx.fillText('type your name  ·  ↑↓ pick a row  ·  ←→ change it', 434, 250);
+  ctx.fillText('pants only show here — the game sees you from above', 434, 263);
+
+  // preview turntable: freeze the spin, or step the angle a frame at a time to
+  // study the dev from any side (a step arrow freezes on its own) — sits under
+  // the name field, right above the spinning dev it controls
+  ctx.font = 'bold 9px monospace';
+  btn(lx - 80, 53, 22, 16, '‹', '#7fe0ff', () => { devSpinPaused = true; devAngle -= TAU / 16; });
+  btn(lx - 55, 53, 110, 16, devSpinPaused ? 'RESUME SPIN' : 'FREEZE SPIN', devSpinPaused ? '#3fe08a' : '#ffd23f', () => { devSpinPaused = !devSpinPaused; });
+  btn(lx + 58, 53, 22, 16, '›', '#7fe0ff', () => { devSpinPaused = true; devAngle += TAU / 16; });
+
+  // page navigation: bottom-left back to the welcome screen, bottom-right into
+  // the game — mirrors the title screen's forward button
+  ctx.font = 'bold 10px monospace';
+  btn(8, VH - 34, 68, 24, '‹ BACK', '#5a6a90', () => { state = 'menu'; });
+  btn(VW - 108, VH - 34, 96, 24, 'PLAY ›', '#3fe08a', confirmSetup);
 }
 
 function drawGameOver() {
