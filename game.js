@@ -670,11 +670,11 @@ addEventListener('keydown', (e) => {
   if (k === 'm') muted = !muted;
   if (k === 'i' && state === 'play') {
     autoAim = !autoAim;
-    addFloater(player.x, player.y - 16, 'AUTO-AIM ' + (autoAim ? 'ON' : 'OFF'), '#2fe4c8');
+    addFloater(player.x, player.y - 16, 'AUTO-AIM ' + (autoAim ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
   }
   if (k === 'o' && state === 'play') {
     autoShoot = !autoShoot;
-    addFloater(player.x, player.y - 16, 'AUTO-SHOOT ' + (autoShoot ? 'ON' : 'OFF'), '#2fe4c8');
+    addFloater(player.x, player.y - 16, 'AUTO-SHOOT ' + (autoShoot ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
   }
   if ((k === '1' || k === '2' || k === '3') && state === 'play') {
     lang = +k - 1;
@@ -742,6 +742,9 @@ let shake = 0;
 
 let player, bullets, enemies, particles, floaters, pickups;
 let sprint, phase, breakTimer, spawnQueue, spawnTimer, spawnInterval, meetingCd;
+// Sprint deadline: seconds until "standup". When it hits, every live and future
+// ticket of the sprint enrages (faster, red, worth ×1.5). Boss sprints untimed.
+let deadlineT = 0, enraged = false;
 let combo, comboT, hitFreeze, culprit;
 // The boss fight in progress: its live parts (Merge Conflict has two), the
 // roster entry driving the name/colour, and the title card's fade timer.
@@ -938,6 +941,7 @@ function startGame() {
   bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
   sprint = 1; phase = 'break'; breakTimer = 2.5;
   spawnQueue = []; spawnTimer = 0; spawnInterval = 1; meetingCd = 6;
+  deadlineT = 0; enraged = false;
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
 }
@@ -1197,12 +1201,24 @@ function spawnEnemy(type, side) {
   else { x = VW - inset; y = rnd(16, VH - 16); }
 
   const e = makeEnemy(type, x, y);
+  if (enraged && type !== 'meeting') { e.sp *= 1.5; e.enraged = true; } // late arrivals share the fury
   if (type === 'meeting') {
     // meetings don't hunt you — they drift across the office, soaking up letters
     const tx = side === 2 ? VW + 24 : side === 3 ? -24 : rnd(VW * 0.2, VW * 0.8);
     const ty = side === 0 ? VH + 24 : side === 1 ? -24 : rnd(VH * 0.2, VH * 0.8);
     const d = Math.hypot(tx - x, ty - y) || 1;
     e.vx = (tx - x) / d * e.sp; e.vy = (ty - y) / d * e.sp;
+  }
+  // flanker bugs arc around your gun line instead of walking straight in
+  if (type === 'bug' && sprint >= 4 && Math.random() < 0.35) e.flank = Math.random() < 0.5 ? 1 : -1;
+  // BLOCKED BY: a shielded story that can't be damaged until its linked
+  // blocker bug is resolved — kill order becomes a decision
+  if (type === 'story' && sprint >= 3 && sprint % 4 !== 0 && Math.random() < 0.25) {
+    const b = makeEnemy('bug', clamp(x + rnd(-28, 28), 12, VW - 12), clamp(y + rnd(-28, 28), 12, VH - 12));
+    b.spawnT = 0.45;
+    if (enraged) { b.sp *= 1.5; b.enraged = true; }
+    e.blockedBy = b;
+    e.score = Math.round(e.score * 1.6); // shielded tickets pay better
   }
   if (type === 'epic') {
     addFloater(clamp(x, 30, VW - 30), clamp(y, 20, VH - 20), 'AN EPIC APPEARS!', '#c9a8ff', true);
@@ -1246,6 +1262,7 @@ function damagePlayer(e) {
   if (player.invuln > 0 || player.duckT > 0) return;
   player.hp -= 1;               // every hit costs one coffee cup
   player.invuln = 1.2;
+  combo = 1; comboT = 0;        // a hit kills the chain
   shake += 5;
   hitFreeze = 0.5;              // freeze frame — see exactly what got you
   culprit = e;
@@ -1279,12 +1296,17 @@ function comboTick() {
   comboT = CHAIN_WINDOW;
 }
 
+// Assists are convenience, not free: score earned with them on is taxed.
+const assistMul = () => (autoAim || autoShoot) ? 0.6 : 1;
+
 function killEnemy(e, silent) {
   enemies.splice(enemies.indexOf(e), 1);
   kills++;
   comboTick();
-  const gained = e.score * combo;
+  const gained = Math.round(e.score * combo * (e.enraged ? 1.5 : 1) * assistMul());
   score += gained;
+  // resolving a blocker frees whatever it was blocking
+  for (const o of enemies) if (o.blockedBy === e) { o.blockedBy = null; addFloater(o.x, o.y - 8, 'UNBLOCKED!', '#7fe0ff'); }
   const shredColor = { bug: PAL.bug, story: PAL.story, epic: PAL.epic, hotfix: PAL.cup }[e.type] || PAL.paper;
   addParticles(e.x, e.y, '#dfe6ff', e.type === 'epic' ? 30 : 8, e.type === 'epic' ? 120 : 70);
   addParticles(e.x, e.y, shredColor, e.type === 'epic' ? 16 : 4, 60);
@@ -1307,12 +1329,13 @@ function killEnemy(e, silent) {
     addFloater(e.x, e.y, '+' + gained + (combo > 1 ? ' ×' + combo : ''), combo > 1 ? '#ffd23f' : '#dfe6ff');
     sfx.kill();
   }
-  // pickup drops (bosses hand out their own guaranteed haul, see killBoss)
+  // pickup drops (bosses hand out their own guaranteed haul, see killBoss).
+  // Deliberately stingy — coffee is the rare one, so cups actually matter.
   if (!e.boss) {
     const r = Math.random();
-    if (r < 0.05) pickups.push({ kind: 'coffee', x: e.x, y: e.y, life: 12, phase: rnd(0, TAU) });
-    else if (r < 0.085) pickups.push({ kind: 'can', x: e.x, y: e.y, life: 12, phase: rnd(0, TAU) });
-    else if (r < 0.11) pickups.push({ kind: 'duck', x: e.x, y: e.y, life: 12, phase: rnd(0, TAU) });
+    if (r < 0.02) pickups.push({ kind: 'coffee', x: e.x, y: e.y, life: 12, phase: rnd(0, TAU) });
+    else if (r < 0.045) pickups.push({ kind: 'can', x: e.x, y: e.y, life: 12, phase: rnd(0, TAU) });
+    else if (r < 0.065) pickups.push({ kind: 'duck', x: e.x, y: e.y, life: 12, phase: rnd(0, TAU) });
   }
 }
 
@@ -1327,10 +1350,9 @@ function update(dt) {
   if (hitFreeze > 0) {
     hitFreeze -= dt;
     if (hitFreeze <= 0 && culprit) {
-      // epics and bosses aren't consumed by hitting you — they keep fighting,
-      // and a boss must only die through killBoss (else bossParts is left with
-      // a ghost and the HUD later crashes on a null bossDef).
-      if (culprit.type !== 'epic' && !culprit.boss) {
+      // only a hotfix burns itself out on impact — every other ticket keeps
+      // fighting after it hits you, so a hit is never a free kill
+      if (culprit.type === 'hotfix') {
         const idx = enemies.indexOf(culprit);
         if (idx >= 0) enemies.splice(idx, 1);
         addParticles(culprit.x, culprit.y, '#dfe6ff', 6, 70);
@@ -1412,10 +1434,24 @@ function update(dt) {
       // density is the dial: interval decays 8% per sprint, floored at 0.3s
       spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1));
       spawnTimer = 0;
+      // the sprint has a standup deadline; boss fights are untimed
+      enraged = false;
+      deadlineT = sprint % 4 === 0 ? 0 : 20 + spawnQueue.length * 0.7;
       sfx.wave();
       if (sprint % 4 === 0) spawnBoss(sprint); // boss sprints are the boss, alone
     }
   } else {
+    // standup deadline: when it hits, everything left (and still spawning) enrages
+    if (deadlineT > 0) {
+      deadlineT -= dt;
+      if (deadlineT <= 0) {
+        enraged = true;
+        for (const e of enemies) if (!e.boss && e.type !== 'meeting') { e.sp *= 1.5; e.enraged = true; }
+        addFloater(p.x, p.y - 20, 'STANDUP! THE BACKLOG IS FURIOUS', '#ff5a6e', true);
+        sfx.siren();
+        shake += 6;
+      }
+    }
     spawnTimer -= dt;
     if (spawnQueue.length && spawnTimer <= 0) {
       spawnEnemy(spawnQueue.shift());
@@ -1429,16 +1465,17 @@ function update(dt) {
     }
     if (!spawnQueue.length && !enemies.some(e => e.type !== 'meeting')) {
       const wasBoss = sprint % 4 === 0;
-      const bonus = (50 + sprint * 25) * (wasBoss ? 3 : 1);
+      const bonus = Math.round((50 + sprint * 25) * (wasBoss ? 3 : 1) * assistMul());
       score += bonus;
       if (wasBoss) { bossDef = null; bossMaxHp = 0; }
+      deadlineT = 0; enraged = false;
       clearMsg = (wasBoss ? 'BOSS DOWN!  +' : 'SPRINT ' + sprint + ' CLEAR!  +') + bonus;
       addFloater(p.x, p.y - 14, '+' + bonus, '#3fe08a');
       sprint++;
       phase = 'break';
       breakTimer = sprint % 4 === 0 ? 3.5 : 3; // extra beat before a boss
-      // every 4 sprints cleared = a promotion: +1 max cup, poured full
-      if ((sprint - 1) % 4 === 0) {
+      // every 2nd boss cleared = a promotion: +1 max cup, poured full
+      if ((sprint - 1) % 8 === 0) {
         p.maxHp++;
         p.hp++;
         addFloater(p.x, p.y - 24, 'PROMOTION! +1 MAX CUP', '#ffd23f');
@@ -1466,10 +1503,18 @@ function update(dt) {
     // bosses run a state machine first, and may take over their own movement
     const selfMoved = e.boss ? bossBehave(e, dt, ux, uy) : false;
     if (!selfMoved) {
-      // seek player; wobble amplitude is part of the type's identity
+      // seek player; wobble amplitude is part of the type's identity.
+      // Flankers steer through a rotated approach vector: far away they move
+      // sideways around your gun line, homing straight only once they're close.
+      let sx = ux, sy = uy;
+      if (e.flank) {
+        const arc = e.flank * Math.min(1, d / 150) * 1.15;
+        const ca = Math.cos(arc), sa = Math.sin(arc);
+        sx = ux * ca - uy * sa; sy = ux * sa + uy * ca;
+      }
       const wob = e.wobAmp ? Math.sin(t * e.wobFreq + e.wobPhase) * e.wobAmp : 0;
-      e.x += (ux + -uy * wob) * e.sp * dt;
-      e.y += (uy + ux * wob) * e.sp * dt;
+      e.x += (sx + -sy * wob) * e.sp * dt;
+      e.y += (sy + sx * wob) * e.sp * dt;
     }
     if (e.boss) { // a dashing boss must not leave the office
       e.x = clamp(e.x, e.r, VW - e.r);
@@ -1485,9 +1530,10 @@ function update(dt) {
       const ring = e.r + p.r + GRAZE_PX;
       if (e.grazeArmed && d >= ring) {
         e.grazed = true; e.grazeArmed = false;
-        score += 50;
+        const gz = Math.round(50 * assistMul());
+        score += gz;
         comboTick();
-        addFloater(e.x, e.y - 8, 'GRAZE +50', '#2fe4c8');
+        addFloater(e.x, e.y - 8, 'GRAZE +' + gz, '#2fe4c8');
         addParticles(e.x, e.y, '#2fe4c8', 4, 40);
         sfx.graze();
       } else if (d < ring && d >= e.r + p.r) {
@@ -1518,13 +1564,10 @@ function update(dt) {
       }
       if (e.type === 'epic' || e.boss) {
         if (e.touchCd <= 0) { damagePlayer(e); e.touchCd = 0.8; }
-      } else if (p.invuln > 0) {
-        // harmlessly shredded on invuln frames
-        addParticles(e.x, e.y, '#dfe6ff', 6, 70);
-        enemies.splice(i, 1);
-        continue;
       } else {
-        damagePlayer(e); // freeze frame; the culprit is removed when it ends
+        // no invuln-shred: on invuln frames this is a no-op and the ticket
+        // stays alive — walking through a crowd is never a free clear
+        damagePlayer(e);
         if (state !== 'play') break;
       }
     }
@@ -1556,15 +1599,21 @@ function update(dt) {
       const dx = b.x - e.x, dy = b.y - e.y;
       if (dx * dx + dy * dy < (e.r + 2) * (e.r + 2)) {
         bullets.splice(i, 1);
-        if (e.type === 'meeting' || bossBlocks(e)) {
+        if (e.type === 'meeting' || bossBlocks(e) || (e.blockedBy && enemies.includes(e.blockedBy))) {
           // meeting invites block your letters — infinite HP, zero shame.
-          // A boss in its immune window shrugs them off the same way.
+          // A boss in its immune window, or a BLOCKED BY ticket whose blocker
+          // still lives, shrugs them off the same way.
           addParticles(b.x, b.y, '#5a6a90', 3, 40);
           sfx.block();
           continue outer;
         }
         const matched = e.area && LANGS[b.lang].area === e.area;
         let dmg = matched ? 2 : 1; // right language for the area = double damage
+        // heavies resist off-area letters — switching language is the real answer
+        if (!matched && e.area && (e.boss || e.type === 'epic')) {
+          dmg = 0.5;
+          if (!e.resistHint) { e.resistHint = true; addFloater(e.x, e.y - e.r - 8, 'WRONG LANGUAGE — ×½', '#8f8fa8'); }
+        }
         if (e.boss === 'outage' && e.mode === 'down') dmg *= 2; // the incident window
         if (e.boss === 'conflict' && e.reviveT > 0) dmg *= 2;   // one side already resolved
         e.hp -= dmg;
@@ -1592,7 +1641,7 @@ function update(dt) {
     if (Math.hypot(pk.x - p.x, pk.y - p.y) < 14) {
       if (pk.kind === 'coffee') { p.hp = Math.min(p.maxHp, p.hp + 1); addFloater(pk.x, pk.y, 'REFILL +1 CUP', '#dfe6ff'); }
       if (pk.kind === 'can') { p.rapidT = 8; addFloater(pk.x, pk.y, 'CRUNCH MODE!', '#2fe4c8'); }
-      if (pk.kind === 'duck') { p.duckT = 6; addFloater(pk.x, pk.y, 'DUCK SHIELD!', '#ffd23f'); }
+      if (pk.kind === 'duck') { p.duckT = 3; addFloater(pk.x, pk.y, 'DUCK SHIELD!', '#ffd23f'); }
       pickups.splice(i, 1);
       sfx.pickup();
     }
@@ -1680,6 +1729,18 @@ function draw() {
     // hotfixes flash orange the whole way in
     if (e.type === 'hotfix' && Math.floor(t * 12) % 2 === 0) {
       ctx.strokeStyle = '#ff8a5c';
+      ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
+    }
+    // BLOCKED BY: link line to the blocker + shield border while it lives
+    if (e.blockedBy && enemies.includes(e.blockedBy)) {
+      ctx.strokeStyle = 'rgba(127,224,255,0.35)';
+      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.blockedBy.x, e.blockedBy.y); ctx.stroke();
+      ctx.strokeStyle = '#7fe0ff';
+      ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
+    }
+    // enraged (missed the standup): constant furious red border
+    if (e.enraged) {
+      ctx.strokeStyle = Math.floor(t * 10) % 2 === 0 ? '#ff5a6e' : '#ff8a5c';
       ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
     }
     // impact wind-up: red flash + thickened border inside the reaction budget
@@ -1914,7 +1975,7 @@ function drawHud() {
   }
   if (p.duckT > 0) {
     ctx.drawImage(duckImg, bx, 26);
-    ctx.fillStyle = '#ffd23f'; ctx.fillRect(bx, 35, Math.round(9 * p.duckT / 6), 1);
+    ctx.fillStyle = '#ffd23f'; ctx.fillRect(bx, 35, Math.round(9 * p.duckT / 3), 1);
   }
 
   // sprint + remaining
@@ -1926,8 +1987,9 @@ function drawHud() {
     drawBossBar(); // the boss owns this strip while it lives
   } else if (phase === 'wave') {
     ctx.font = '8px monospace';
-    ctx.fillStyle = '#8f8fa8';
-    ctx.fillText((spawnQueue.length + enemies.length) + ' in backlog', VW / 2, 21);
+    ctx.fillStyle = enraged ? '#ff5a6e' : deadlineT > 0 && deadlineT < 10 ? '#ff8a5c' : '#8f8fa8';
+    ctx.fillText((spawnQueue.length + enemies.length) + ' in backlog'
+      + (deadlineT > 0 ? ' · standup in ' + Math.ceil(deadlineT) + 's' : enraged ? ' · FURIOUS!' : ''), VW / 2, 21);
   }
 
   // score
@@ -2107,9 +2169,10 @@ function jumpToSprint(n) {
   bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
   spawnQueue = []; spawnTimer = 0; meetingCd = 6;
+  deadlineT = 0; enraged = false;
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   clearMsg = '';
-  player.maxHp = 3 + Math.floor((n - 1) / 4); // one promotion per boss cleared before now
+  player.maxHp = 3 + Math.floor((n - 1) / 8); // one promotion per 2nd boss cleared before now
   player.hp = player.maxHp;
   player.x = VW / 2; player.y = VH / 2; player.vx = 0; player.vy = 0;
   player.invuln = 1; player.rapidT = 0; player.duckT = 0;

@@ -81,16 +81,25 @@ type — one glance is full information:
 - **Telegraphs:** tickets materialize with a 0.4s pulsing flash + ding (inert
   until real), draw a dotted approach trail toward your chair, and flash a red
   thickened border ~1.5s before impact — always enough time to turn and shoot.
-- **HP is 3 coffee cups**, no regen (coffee drops refill one). On a hit the
-  game freeze-frames for 0.5s and highlights the ticket that got you. Every
-  5 sprints cleared (reaching sprint 6, 11, 16 …) is a **promotion**: your
+- **HP is 3 coffee cups**, no regen (coffee drops refill one — rare). On a hit
+  the game freeze-frames for 0.5s and highlights the ticket that got you. Every
+  2nd boss cleared (reaching sprint 9, 17, 25 …) is a **promotion**: your
   cup maximum grows by one, poured full.
+- **Standup deadline:** every regular sprint has a countdown; when it hits, the
+  remaining backlog **enrages** — 50% faster, red, worth ×1.5 SP.
+- **BLOCKED BY:** some Stories arrive shielded, linked to a blocker Bug — the
+  Story can't be damaged until its blocker is resolved. Kill order matters.
 - **Areas & languages:** every ticket belongs to an area, shown as the colored
   stripe on its left edge — **Frontend** (red), **Backend** (green),
   **Infrastructure** (blue). Shooting it with the matching language (letters
-  the same color as the stripe) does **×2 damage**. Epics pass their area to
-  the Stories they split into.
+  the same color as the stripe) does **×2 damage**; Epics and bosses shrug off
+  off-area letters at **×½**. Epics pass their area to the Stories they split
+  into.
+- **Assists are taxed:** auto-aim / auto-shoot (I / O) work, but score earned
+  with either enabled is ×0.6.
 - **Chain:** kills within 1.2s of each other build a ×1→×8 multiplier.
+  Getting hit resets it to ×1 — and the ticket that hit you keeps coming
+  (only hotfixes burn out on impact).
   **Graze:** dodging a ticket by ~8px pays +50 and ticks the chain. Turtling
   scores worse than committing — aggression is the whole meta.
 - Waves are **sprints** and scale density only (spawn interval decays 8% per
