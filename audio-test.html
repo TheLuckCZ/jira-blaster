@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Jira Blaster — audio harness</title>
+<style>
+ body{font:13px/1.5 ui-monospace,Menlo,monospace;background:#0d0d12;color:#e8e8f0;padding:20px}
+ table{border-collapse:collapse;margin-top:12px}
+ td,th{padding:3px 12px;text-align:left;border-bottom:1px solid #2a2a33}
+ .bad{color:#e0554f} .warn{color:#ffb43d} .ok{color:#2fbf62}
+ button{font:inherit;background:#2a2a33;color:#e8e8f0;border:1px solid #444;padding:4px 10px;cursor:pointer;margin:2px}
+</style></head><body>
+<h3>Jira Blaster audio harness</h3>
+<div id="out">rendering…</div>
+<h4>Audition (click to hear, live AudioContext)</h4>
+<div id="pads"></div>
+<script>
+const SR = 44100;
+async function main() {
+  const src = await (await fetch('game.js?h=' + Math.random())).text();
+  const a = src.indexOf('let actx = null');
+  const b = src.indexOf('// ---------------------------------------------------------------- input');
+  if (a < 0 || b < 0) { out.textContent = 'could not locate audio block'; return; }
+  const block = src.slice(a, b);
+
+  const rnd = (x, y) => x + Math.random() * (y - x);
+  const make = new Function('rnd', 'Ctor', `
+    const localStorage = { getItem: () => null, setItem: () => {} };
+    ${block}
+    return {
+      VOICES, sfx, setMuted,
+      fresh: () => { actx = null; window.AudioContext = Ctor; initAudio(); return actx; },
+      live:  () => { actx = null; window.AudioContext = null; initAudio(); return actx; },
+    };
+  `);
+
+  // Each render gets its own OfflineAudioContext, handed to the real initAudio
+  // through the same window.AudioContext lookup the game uses.
+  let dur = 3;
+  class Ctor { constructor() { return new OfflineAudioContext(2, SR * dur, SR); } }
+  const M = make(rnd, Ctor);
+
+  const rows = [];
+  for (const name of Object.keys(M.VOICES)) {
+    dur = name === 'bossIn' ? 4 : 3;
+    let peak = 0, rms = 0, err = null, clipped = 0;
+    try {
+      const ctx = M.fresh();
+      M.VOICES[name]();
+      const buf = await ctx.startRendering();
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) {
+        const v = Math.abs(d[i]);
+        if (v > peak) peak = v;
+        if (v >= 0.999) clipped++;
+        rms += d[i] * d[i];
+      }
+      rms = Math.sqrt(rms / d.length);
+    } catch (e) { err = e.message; }
+    rows.push({ name, peak, rms, err, clipped });
+  }
+
+  // Target peak per sound. Three tiers: what you hear constantly sits low,
+  // punctuation sits mid, once-a-sprint drama sits high.
+  const TARGET = {
+    shoot: 0.12, hit: 0.11, crit: 0.16,
+    kill: 0.20, pickup: 0.20, quack: 0.18, ding: 0.16, siren: 0.22, block: 0.16, graze: 0.14,
+    hurt: 0.34, epicDie: 0.32, wave: 0.30, over: 0.34, bossIn: 0.34, bossDown: 0.34,
+  };
+  const fmt = (v) => v.toFixed(3);
+  out.innerHTML = '<table><tr><th>sound</th><th>peak</th><th>rms</th><th>target</th><th>×vol</th><th>clip</th><th>verdict</th></tr>' +
+    rows.map(r => {
+      let cls = 'ok', msg = 'ok';
+      const scale = r.peak > 0.0001 ? TARGET[r.name] / r.peak : 0;
+      if (r.err) { cls = 'bad'; msg = 'THREW: ' + r.err; }
+      else if (r.peak < 0.005) { cls = 'bad'; msg = 'SILENT'; }
+      else if (r.clipped > 0) { cls = 'bad'; msg = 'CLIPPING'; }
+      else if (scale > 1.25 || scale < 0.8) { cls = 'warn'; msg = 'off target'; }
+      return `<tr><td>${r.name}</td><td>${fmt(r.peak)}</td><td>${fmt(r.rms)}</td><td>${fmt(TARGET[r.name])}</td>` +
+             `<td>${scale.toFixed(2)}</td><td>${r.clipped}</td><td class="${cls}">${msg}</td></tr>`;
+    }).join('') + '</table>';
+  console.log('[audio-harness] scale ' + rows.map(r =>
+    r.name + '=' + (r.peak > 0.0001 ? (TARGET[r.name] / r.peak).toFixed(2) : '?')).join(' '));
+
+  const bad = rows.filter(r => r.err || r.peak < 0.005 || r.clipped > 0);
+  console.log('[audio-harness] ' + rows.length + ' sounds, ' + bad.length + ' problems' +
+    (bad.length ? ': ' + bad.map(r => r.name + '=' + (r.err || (r.peak < 0.005 ? 'silent' : 'clipping'))).join(', ') : ''));
+
+  // Worst case the game can actually reach: a wave clearing while a boss dies,
+  // kills land and the player takes a hit — i.e. every distinct sound at once.
+  // (A held trigger can't stack: the per-sfx throttle spaces shoots 45ms apart
+  // and each one lasts 24ms, so they never overlap.)
+  dur = 4;
+  try {
+    const ctx = M.fresh();
+    for (const name of Object.keys(M.VOICES)) M.VOICES[name]();
+    const d = (await ctx.startRendering()).getChannelData(0);
+    let p = 0, c = 0;
+    for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > p) p = v; if (v >= 0.999) c++; }
+    console.log('[audio-harness] all 16 at once: peak=' + p.toFixed(3) + ' clipped=' + c);
+    out.insertAdjacentHTML('beforeend',
+      `<p>All 16 sounds simultaneously: peak <b class="${c ? 'bad' : 'ok'}">${p.toFixed(3)}</b>, clipped samples <b>${c}</b></p>`);
+  } catch (e) { console.log('[audio-harness] burst test threw: ' + e.message); }
+
+  // Live audition pads.
+  let liveM = null;
+  for (const name of Object.keys(M.VOICES)) {
+    const btn = document.createElement('button');
+    btn.textContent = name;
+    btn.onclick = () => { if (!liveM) { liveM = make(rnd, null); liveM.live(); } liveM.sfx[name](); };
+    pads.appendChild(btn);
+  }
+}
+main().catch(e => { out.textContent = 'harness error: ' + e.message; console.log('[audio-harness] ' + e.message); });
+</script></body></html>

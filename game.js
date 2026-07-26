@@ -617,43 +617,252 @@ const bgCanvas = (() => {
 })();
 
 // ---------------------------------------------------------------- audio
-let actx = null, muted = false;
+// Every sound is synthesized at runtime — no sample files, no loader, no
+// network, so the game stays a two-file drop-in. Three voices cover the whole
+// soundtrack:
+//   noise() — filtered noise burst: keyboards, knocks, whooshes, modem hiss
+//   bell()  — two-operator FM: the entire notification-chime family
+//   tone()  — plain oscillator, optional pitch glide and formant filter
+// They all land on master → compressor → out, so a held trigger can't clip the
+// mix, and each sfx is rate-limited so dense frames don't smear into mush.
+//
+// The palette is deliberately office-flavoured: firing is a keyboard, a kill is
+// a ticket-closed chime, taking a hit is an error dialog, and a boss arrives
+// over a 56k handshake. They're original synths, not the real Slack/Windows
+// sounds — same reflex, nothing borrowed.
+
+let actx = null, master = null, verb = null, noiseBuf = null;
+let muted = false;
+const VOLUME = 0.85;
+try { muted = localStorage.getItem('jiraBlasterMute') === '1'; } catch (e) { /* private mode */ }
+
 function initAudio() {
-  if (!actx) {
-    try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* no audio */ }
+  // resume() rejects if the gesture didn't count (Safari is picky); the next
+  // input will call through here again, so swallowing it is the whole recovery.
+  if (actx) { if (actx.state === 'suspended') actx.resume().catch(() => {}); return; }
+  try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+
+  master = actx.createGain();
+  master.gain.value = muted ? 0 : VOLUME;
+  // Rapid fire stacks a dozen voices per second; the compressor rides those
+  // peaks instead of letting them clip the sum.
+  const comp = actx.createDynamicsCompressor();
+  comp.threshold.value = -14; comp.knee.value = 14; comp.ratio.value = 6;
+  comp.attack.value = 0.003; comp.release.value = 0.16;
+  master.connect(comp); comp.connect(actx.destination);
+
+  // A small algorithmic room — decaying noise as the impulse response. It is
+  // the whole difference between "a beep" and "a sound in a room".
+  const conv = actx.createConvolver();
+  conv.buffer = renderNoise(0.34, 2.6, 2);
+  verb = actx.createGain(); verb.gain.value = 0.5;
+  verb.connect(conv); conv.connect(master);
+
+  noiseBuf = renderNoise(1, 0, 1);
+  if (actx.state === 'suspended') actx.resume().catch(() => {});
+}
+
+// decay 0 → flat white noise (the reusable source); >0 → a decaying tail (the
+// reverb impulse).
+function renderNoise(dur, decay, chans) {
+  const n = Math.max(1, Math.floor(actx.sampleRate * dur));
+  const b = actx.createBuffer(chans, n, actx.sampleRate);
+  for (let c = 0; c < chans; c++) {
+    const d = b.getChannelData(c);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (decay ? Math.pow(1 - i / n, decay) : 1);
   }
-  if (actx && actx.state === 'suspended') actx.resume();
+  return b;
 }
-function beep(f0, f1, dur, type, vol, at) {
-  if (!actx || muted) return;
-  const t0 = actx.currentTime + (at || 0);
-  const o = actx.createOscillator(), g = actx.createGain();
-  o.type = type || 'square';
-  o.frequency.setValueAtTime(f0, t0);
-  o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t0 + dur);
-  g.gain.setValueAtTime(vol || 0.12, t0);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g); g.connect(actx.destination);
-  o.start(t0); o.stop(t0 + dur + 0.02);
+
+// Attack + exponential decay. The attack is what separates a click from a
+// chime: 1 ms reads as mechanical, 20 ms+ reads as a tone.
+function envelope(t0, peak, atk, dur) {
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(peak, t0 + atk);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + atk + dur);
+  return g;
 }
-const sfx = {
-  shoot: () => beep(rnd(700, 900), 180, 0.06, 'square', 0.07),
-  hit: () => beep(220, 160, 0.05, 'square', 0.1),
-  crit: () => beep(880, 1320, 0.06, 'square', 0.1),
-  kill: () => beep(520, 90, 0.16, 'sawtooth', 0.14),
-  pickup: () => beep(660, 1100, 0.13, 'sine', 0.18),
-  hurt: () => beep(160, 55, 0.28, 'sawtooth', 0.28),
-  quack: () => beep(300, 200, 0.1, 'square', 0.2),
-  ding: () => { beep(1320, 1280, 0.05, 'sine', 0.05); beep(1760, 1700, 0.07, 'sine', 0.04, 0.055); },
-  siren: () => { beep(980, 380, 0.3, 'sawtooth', 0.12); beep(1240, 460, 0.26, 'sawtooth', 0.07, 0.09); },
-  block: () => beep(150, 95, 0.07, 'square', 0.09),
-  graze: () => beep(740, 1480, 0.09, 'sine', 0.09),
-  epicDie: () => { beep(400, 30, 0.5, 'sawtooth', 0.3); beep(600, 60, 0.4, 'square', 0.2, 0.05); },
-  wave: () => { beep(440, 440, 0.09, 'triangle', 0.16); beep(550, 550, 0.09, 'triangle', 0.16, 0.11); beep(660, 660, 0.14, 'triangle', 0.18, 0.22); },
-  over: () => { beep(320, 40, 0.9, 'sawtooth', 0.25); beep(240, 30, 1.1, 'triangle', 0.2, 0.1); },
-  bossIn: () => { beep(120, 60, 0.7, 'sawtooth', 0.3); beep(180, 90, 0.6, 'square', 0.16, 0.12); beep(90, 45, 0.9, 'triangle', 0.22, 0.26); },
-  bossDown: () => { beep(220, 880, 0.5, 'square', 0.22); beep(330, 1320, 0.6, 'triangle', 0.18, 0.13); beep(440, 1760, 0.7, 'sine', 0.2, 0.27); },
+
+// Dry to the master bus, plus an optional tap into the reverb.
+function route(src, g, send) {
+  src.connect(g); g.connect(master);
+  if (send) { const s = actx.createGain(); s.gain.value = send; g.connect(s); s.connect(verb); }
+}
+
+function tone(o) {
+  const atk = o.a == null ? 0.004 : o.a, t0 = actx.currentTime + (o.at || 0);
+  const osc = actx.createOscillator();
+  osc.type = o.type || 'square';
+  osc.frequency.setValueAtTime(o.f, t0);
+  if (o.f2) osc.frequency.exponentialRampToValueAtTime(Math.max(1, o.f2), t0 + atk + o.dur);
+  let out = osc;
+  if (o.filter) {
+    // A formant is a resonance, not a brick wall: peaking EQ lifts the band
+    // and leaves the rest of the tone's weight intact. A bandpass here would
+    // throw away the fundamental and gut the level.
+    const pk = actx.createBiquadFilter();
+    pk.type = 'peaking'; pk.frequency.value = o.filter.f;
+    pk.Q.value = o.filter.q || 1; pk.gain.value = o.filter.g == null ? 12 : o.filter.g;
+    out.connect(pk); out = pk;
+  }
+  if (o.lp) { // tame a buzzy sawtooth without changing how heavy it sits
+    const lp = actx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = o.lp; lp.Q.value = 0.7;
+    out.connect(lp); out = lp;
+  }
+  route(out, envelope(t0, o.vol, atk, o.dur), o.send);
+  osc.start(t0); osc.stop(t0 + atk + o.dur + 0.03);
+}
+
+function noise(o) {
+  const atk = o.a == null ? 0.001 : o.a, t0 = actx.currentTime + (o.at || 0);
+  const src = actx.createBufferSource();
+  src.buffer = noiseBuf; src.loop = true;
+  const bq = actx.createBiquadFilter();
+  bq.type = o.type || 'bandpass';
+  bq.frequency.setValueAtTime(o.f, t0);
+  if (o.f2) bq.frequency.exponentialRampToValueAtTime(Math.max(20, o.f2), t0 + atk + o.dur);
+  bq.Q.value = o.q == null ? 1 : o.q;
+  src.connect(bq);
+  route(bq, envelope(t0, o.vol, atk, o.dur), o.send);
+  // Random start offset, so repeated bursts aren't the identical waveform.
+  src.start(t0, Math.random() * 0.9); src.stop(t0 + atk + o.dur + 0.03);
+}
+
+// Two-operator FM: the modulator bends the carrier's frequency. Integer ratios
+// ring like a bell or marimba; an inharmonic one (1.41) clangs.
+function bell(o) {
+  const atk = o.a == null ? 0.003 : o.a, t0 = actx.currentTime + (o.at || 0);
+  const car = actx.createOscillator(), mod = actx.createOscillator();
+  car.type = 'sine'; mod.type = 'sine';
+  car.frequency.value = o.f;
+  mod.frequency.value = o.f * (o.ratio || 2);
+  // The modulation index decays faster than the note: bright strike, pure tail.
+  const mg = actx.createGain();
+  mg.gain.setValueAtTime(o.index || 200, t0);
+  mg.gain.exponentialRampToValueAtTime(0.01, t0 + o.dur * 0.6);
+  mod.connect(mg); mg.connect(car.frequency);
+  route(car, envelope(t0, o.vol, atk, o.dur), o.send);
+  const end = t0 + atk + o.dur + 0.03;
+  mod.start(t0); car.start(t0); mod.stop(end); car.stop(end);
+}
+
+// `vol` is the envelope peak *before* filtering, so it is not the level you
+// hear — a narrow bandpass on noise throws away most of a source's energy, and
+// FM spreads it across sidebands. These numbers were calibrated by rendering
+// each sound offline and measuring its actual peak (see audio-test.html), so
+// the mix sits in three tiers: constant sounds ~0.12, punctuation ~0.20,
+// once-a-sprint drama ~0.34. Re-run the harness after changing any of them.
+const VOICES = {
+  // Firing is typing. Clacky top end plus a little keycap thock underneath.
+  shoot: () => {
+    noise({ f: rnd(1900, 2700), q: 1.4, dur: 0.024, vol: 0.64 });
+    tone({ f: rnd(150, 190), f2: 90, dur: 0.03, type: 'sine', vol: 0.4 });
+  },
+  hit: () => {
+    noise({ f: rnd(900, 1300), q: 1.2, dur: 0.03, vol: 0.65 });
+    tone({ f: 200, f2: 150, dur: 0.04, type: 'square', vol: 0.35 });
+  },
+  // Landing the matching language is the Enter key: heavier clack, bright tick.
+  crit: () => {
+    noise({ f: 2600, q: 2, dur: 0.03, vol: 0.6 });
+    bell({ f: 1568, ratio: 2, index: 320, dur: 0.16, vol: 0.48, send: 0.3 });
+  },
+  // Ticket closed — a resolved fifth, the sound of the column moving to Done.
+  kill: () => {
+    bell({ f: 784, ratio: 3.5, index: 480, dur: 0.34, vol: 0.26, send: 0.5 });
+    bell({ f: 1175, ratio: 2, index: 200, dur: 0.26, vol: 0.15, at: 0.045, send: 0.5 });
+  },
+  // Two soft woody taps — the "someone messaged you" knock.
+  pickup: () => {
+    for (const at of [0, 0.088]) {
+      noise({ f: 430, q: 3.2, dur: 0.055, vol: 0.28, at, send: 0.25 });
+      tone({ f: 196, f2: 150, dur: 0.06, type: 'sine', vol: 0.19, at });
+    }
+  },
+  // Error dialog: a falling fourth, sine body with a triangle octave on top.
+  hurt: () => {
+    tone({ f: 622, dur: 0.17, type: 'sine', vol: 0.25, a: 0.008, send: 0.3 });
+    tone({ f: 1244, dur: 0.17, type: 'triangle', vol: 0.07, a: 0.008 });
+    tone({ f: 466, dur: 0.34, type: 'sine', vol: 0.25, a: 0.008, at: 0.18, send: 0.35 });
+    tone({ f: 932, dur: 0.34, type: 'triangle', vol: 0.07, a: 0.008, at: 0.18 });
+  },
+  // The rubber duck, with a throat.
+  quack: () => tone({ f: 380, f2: 210, dur: 0.13, type: 'sawtooth', vol: 0.32, filter: { f: 1100, q: 4, g: 16 }, lp: 3200, send: 0.2 }),
+  // New ticket assigned to you. Glockenspiel, gone in a third of a second.
+  ding: () => bell({ f: 1568, ratio: 3, index: 300, dur: 0.3, vol: 0.48, send: 0.55 }),
+  // Pager alert — two tones trading places.
+  siren: () => {
+    tone({ f: 880, f2: 660, dur: 0.13, type: 'square', vol: 0.073, filter: { f: 2200, q: 1, g: 8 }, lp: 4000 });
+    tone({ f: 660, f2: 880, dur: 0.13, type: 'square', vol: 0.073, at: 0.14, filter: { f: 2200, q: 1, g: 8 }, lp: 4000 });
+  },
+  // Access denied. Two detuned squares beating against each other.
+  block: () => {
+    tone({ f: 150, dur: 0.09, type: 'square', vol: 0.38 });
+    tone({ f: 156, dur: 0.09, type: 'square', vol: 0.29 });
+    noise({ f: 500, q: 1, dur: 0.05, vol: 0.17 });
+  },
+  // A near miss: something flies past your ear.
+  graze: () => noise({ f: 700, f2: 4200, q: 0.9, dur: 0.14, vol: 1.6, send: 0.3 }),
+  // Hardware failure. Inharmonic clang over a dying spindle.
+  epicDie: () => {
+    noise({ f: 1400, f2: 180, q: 1.2, dur: 0.4, vol: 0.54, send: 0.4 });
+    tone({ f: 220, f2: 40, dur: 0.45, type: 'sawtooth', vol: 0.44, lp: 900 });
+    bell({ f: 330, ratio: 1.41, index: 600, dur: 0.5, vol: 0.25, at: 0.03 });
+  },
+  // Build passed: a major arpeggio climbing out of the pipeline.
+  wave: () => [523.25, 659.25, 783.99, 1046.5].forEach((f, i) =>
+    bell({ f, ratio: 4, index: 260, dur: 0.34, vol: 0.21, at: i * 0.085, send: 0.5 })),
+  // Shutting down. Four notes down, the last one left hanging.
+  over: () => {
+    [587.33, 493.88, 392, 293.66].forEach((f, i) =>
+      tone({ f, dur: i === 3 ? 0.9 : 0.3, type: 'triangle', vol: 0.23, a: 0.02, at: i * 0.22, send: 0.6 }));
+    tone({ f: 147, f2: 55, dur: 1.1, type: 'sawtooth', vol: 0.17, a: 0.05, at: 0.66, lp: 420 });
+  },
+  // Dial-up handshake, abridged: touch-tone dialling, the 2100 Hz answer tone,
+  // the dual-tone warble, then the carrier scramble. ~1.7s of pure 1998.
+  bossIn: () => {
+    [[697, 1209], [852, 1477], [770, 1336]].forEach((pair, i) => {
+      tone({ f: pair[0], dur: 0.075, type: 'sine', vol: 0.09, at: i * 0.13 });
+      tone({ f: pair[1], dur: 0.075, type: 'sine', vol: 0.09, at: i * 0.13 });
+    });
+    tone({ f: 2100, dur: 0.42, type: 'sine', vol: 0.1, a: 0.01, at: 0.46, send: 0.2 });
+    tone({ f: 1650, f2: 1180, dur: 0.3, type: 'square', vol: 0.054, at: 0.9, filter: { f: 2000, q: 1, g: 8 }, lp: 4000 });
+    tone({ f: 1080, f2: 1750, dur: 0.3, type: 'square', vol: 0.054, at: 0.9, filter: { f: 2000, q: 1, g: 8 }, lp: 4000 });
+    noise({ f: 900, f2: 2600, q: 0.9, dur: 0.55, vol: 0.14, a: 0.02, at: 1.15, send: 0.4 });
+    noise({ f: 2400, f2: 700, q: 0.8, dur: 0.5, vol: 0.09, a: 0.02, at: 1.2 });
+    tone({ f: 110, f2: 55, dur: 0.9, type: 'sawtooth', vol: 0.14, a: 0.03, at: 1.15, lp: 400 });
+  },
+  // Spindle winds down, then the all-clear chime.
+  bossDown: () => {
+    noise({ f: 2200, f2: 300, q: 1.6, dur: 0.7, vol: 0.2, send: 0.4 });
+    tone({ f: 180, f2: 45, dur: 0.75, type: 'sawtooth', vol: 0.2, lp: 600 });
+    [523.25, 783.99, 1046.5].forEach((f, i) =>
+      bell({ f, ratio: 3, index: 300, dur: 0.6, vol: 0.21, at: 0.5 + i * 0.11, send: 0.6 }));
+  },
 };
+
+// Minimum seconds between repeats of the same sound. Held fire and dense hit
+// frames would otherwise stack voices faster than the ear can separate them.
+const SFX_GAP = { shoot: 0.045, hit: 0.04, crit: 0.04, block: 0.05, graze: 0.06, kill: 0.05, ding: 0.07 };
+const lastPlayed = {};
+const sfx = {};
+for (const name of Object.keys(VOICES)) {
+  sfx[name] = () => {
+    if (!actx || muted) return;
+    const gap = SFX_GAP[name];
+    if (gap && lastPlayed[name] > actx.currentTime - gap) return;
+    lastPlayed[name] = actx.currentTime;
+    VOICES[name]();
+  };
+}
+
+function setMuted(m) {
+  muted = m;
+  if (master) master.gain.setTargetAtTime(muted ? 0 : VOLUME, actx.currentTime, 0.02);
+  try { localStorage.setItem('jiraBlasterMute', muted ? '1' : '0'); } catch (e) { /* private mode */ }
+}
 
 // ---------------------------------------------------------------- input
 const keys = {};
@@ -667,7 +876,7 @@ addEventListener('keydown', (e) => {
   // The setup screen owns the keyboard — every printable key is text there, so
   // none of the shortcuts below (M, I, O, 1-3, P, R) may fire while typing.
   if (state === 'setup') { setupKey(e); return; }
-  if (k === 'm') muted = !muted;
+  if (k === 'm') setMuted(!muted);
   if (k === 'i' && state === 'play') {
     autoAim = !autoAim;
     addFloater(player.x, player.y - 16, 'AUTO-AIM ' + (autoAim ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
