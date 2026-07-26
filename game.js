@@ -1497,16 +1497,31 @@ function killBoss(e, gained) {
 // pair: it caps how fast the shield can swing around to face you, so a player
 // who closes and strafes can open an angle on the blocker, while one standing
 // off at range never will. Too high and the pair is simply unkillable.
+// It only governs how fast the blocker closes distance to its slot, not how
+// fast the slot moves — ESCORT_TURN below is what actually decides whether the
+// shield can be beaten. Keep this comfortably above 1 so the blocker can still
+// follow the ticket it escorts, which is travelling at the same base speed.
+const ESCORT_CATCHUP = 2.4;
+
+// How fast, in rad/s, the blocker can swing its slot around the ticket. This
+// is the difficulty of a BLOCKED BY pair, and the only knob worth turning.
 //
-// It has to be read together with escortGap below — the blocker orbits at that
-// radius, so widening the gap costs it angular speed and has to be paid back
-// here. Measured at the current gap, as % of frames the blocker has a clear
-// line on it (5 seeds, orbiting player vs. one standing off at range):
-//   1.15 -> 89% / 8%      2.5 -> 84% / 2%
-//   2.0  -> 90% / 1%      3.0 -> 69% / 1%
-// Anything from 2.0 up keeps the standoff case shut, which is the property
-// that matters: you cannot chip a blocker from across the room.
-const ESCORT_CATCHUP = 3.0;
+// The slot used to be recomputed from the player's position every frame, so it
+// tracked with zero reaction delay and the blocker was limited only by travel
+// speed. That is unbeatable by manoeuvring — you can only out-run it — and no
+// value of ESCORT_CATCHUP fixes it, which is what an earlier pass wasted its
+// time discovering. Rate-limiting the turn is what creates the counterplay:
+// cut back the other way and the shield has to swing the long way round, and
+// that swing is the window you shoot through.
+//
+// Time for the slot to come back around after a full reversal (measured; the
+// theory is pi/ESCORT_TURN and it tracks well):
+//   3.0 -> 0.85s      1.1 -> 2.95s   <- chosen
+//   1.4 -> 1.90s      0.8 -> 3.88s
+// The old instant-tracking behaviour was worth about 1s, i.e. roughly 3.0.
+// For scale, the chair tops out at 160 u/s, so at ~60px out you can swing
+// around a ticket at up to ~2.6 rad/s — well clear of this.
+const ESCORT_TURN = 1.1;
 
 // Centre-to-centre distance a blocker rides behind the ticket it escorts.
 // Derived from the two radii so it still reads right if either changes, then
@@ -1531,6 +1546,7 @@ function tuckBlocker(story, b) {
   b.wobAmp = story.wobAmp; b.wobFreq = story.wobFreq; b.wobPhase = story.wobPhase;
   b.flank = 0;        // a blocker holds the line; it doesn't arc around it
   b.blocks = story;   // and it escorts that ticket rather than hunting you
+  b.escortA = a;      // starts already covering, then has to turn to keep up
 }
 
 function spawnEnemy(type, side) {
@@ -1889,7 +1905,17 @@ function update(dt) {
       // gap is the counterplay; without it the blocker would be unreachable
       // and the pair unkillable.
       const s = e.blocks;
-      const sa = Math.atan2(p.y - s.y, p.x - s.x);
+      // The slot is a heading the blocker turns to, not a point it snaps to.
+      // Rate-limiting that turn is what makes the shield out-manoeuvrable:
+      // cut back the other way and it has to swing the long way round before
+      // it's covering the ticket again, and that swing is your window. Without
+      // it the slot tracks you with zero reaction delay and no amount of
+      // capping its speed ever opens a reliable angle.
+      const want = Math.atan2(p.y - s.y, p.x - s.x);
+      if (e.escortA === undefined) e.escortA = want;
+      const turn = ((want - e.escortA + Math.PI) % TAU + TAU) % TAU - Math.PI;
+      e.escortA += clamp(turn, -ESCORT_TURN * dt, ESCORT_TURN * dt);
+      const sa = e.escortA;
       const g = escortGap(s, e);
       // Keep the slot inside the room. At this gap a ticket working a wall
       // puts its slot outside it, and the blocker would sit off-screen —

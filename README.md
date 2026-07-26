@@ -107,10 +107,12 @@ type — one glance is full information:
   **formation**: the shielded Story leads, and the blocker escorts it a few
   card-widths behind, matching its speed and its straight line. Since a blocked
   Story eats your letters, the big immune card is a moving wall with the fix
-  trailing behind it — shooting head-on gets you nothing. The blocker can only
-  swing around the Story so fast, so **closing in and strafing** is what opens
-  an angle on it; standing off at range never will. Back a pair into a wall and
-  the formation flattens out sideways, which is its other weakness.
+  trailing behind it — shooting head-on gets you nothing. The blocker steers to
+  stay covering, but it can only **turn** so fast, so the counterplay is to
+  **cut back the other way**: reverse your circle and the shield has to swing
+  the long way round, which buys you a couple of seconds of clear line on the
+  blocker. Standing off at range never opens anything. Back a pair into a wall
+  and the formation flattens out sideways, which is its other weakness.
 - **Areas & languages:** every ticket belongs to an area, shown as the colored
   stripe on its left edge — **Frontend** (red), **Backend** (green),
   **Infrastructure** (blue). Shooting it with the matching language (letters
