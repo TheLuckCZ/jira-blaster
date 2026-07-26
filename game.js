@@ -1497,7 +1497,22 @@ function killBoss(e, gained) {
 // pair: it caps how fast the shield can swing around to face you, so a player
 // who closes and strafes can open an angle on the blocker, while one standing
 // off at range never will. Too high and the pair is simply unkillable.
-const ESCORT_CATCHUP = 1.15;
+//
+// It has to be read together with escortGap below — the blocker orbits at that
+// radius, so widening the gap costs it angular speed and has to be paid back
+// here. Measured at the current gap, as % of frames the blocker has a clear
+// line on it (5 seeds, orbiting player vs. one standing off at range):
+//   1.15 -> 89% / 8%      2.5 -> 84% / 2%
+//   2.0  -> 90% / 1%      3.0 -> 69% / 1%
+// Anything from 2.0 up keeps the standoff case shut, which is the property
+// that matters: you cannot chip a blocker from across the room.
+const ESCORT_CATCHUP = 3.0;
+
+// Centre-to-centre distance a blocker rides behind the ticket it escorts.
+// Derived from the two radii so it still reads right if either changes, then
+// opened up 3x from the original snug spacing: the pair reads as a formation
+// with real air in it rather than two sprites stuck together.
+const escortGap = (story, b) => (story.r + b.r + 3) * 3;
 
 // Park a blocker just behind the ticket it blocks, on the far side from the
 // player, and make it move as part of that formation rather than as a bug.
@@ -1509,7 +1524,7 @@ const ESCORT_CATCHUP = 1.15;
 // it's meant to be hiding behind and hand itself over.
 function tuckBlocker(story, b) {
   const a = Math.atan2(player.y - story.y, player.x - story.x) + rnd(-0.22, 0.22);
-  const gap = story.r + b.r + 3; // sits clear of the separation shove
+  const gap = escortGap(story, b);
   b.x = clamp(story.x - Math.cos(a) * gap, 12, VW - 12);
   b.y = clamp(story.y - Math.sin(a) * gap, 12, VH - 12);
   b.sp = story.sp;
@@ -1543,6 +1558,14 @@ function spawnEnemy(type, side) {
   if (type === 'story' && sprint >= 3 && sprint % 4 !== 0 && Math.random() < 0.25) {
     const b = makeEnemy('bug', x, y);
     b.spawnT = 0.45;
+    // Lead the ticket out ahead of its blocker rather than pushing the blocker
+    // back through the wall: the spawn point is already hard against the edge,
+    // and at this gap the blocker would clamp on top of the ticket and then
+    // have to drag itself back in from off-screen.
+    const a = Math.atan2(player.y - y, player.x - x);
+    const g = escortGap(e, b);
+    e.x = clamp(x + Math.cos(a) * g, 12, VW - 12);
+    e.y = clamp(y + Math.sin(a) * g, 12, VH - 12);
     tuckBlocker(e, b);
     e.blockedBy = b;
     e.score = Math.round(e.score * 1.6); // shielded tickets pay better
@@ -1867,8 +1890,14 @@ function update(dt) {
       // and the pair unkillable.
       const s = e.blocks;
       const sa = Math.atan2(p.y - s.y, p.x - s.x);
-      const g = s.r + e.r + 3;
-      const gx = s.x - Math.cos(sa) * g - e.x, gy = s.y - Math.sin(sa) * g - e.y;
+      const g = escortGap(s, e);
+      // Keep the slot inside the room. At this gap a ticket working a wall
+      // puts its slot outside it, and the blocker would sit off-screen —
+      // invisible and unshootable, with the ticket immune for no reason the
+      // player can see. Cornered, the formation just degrades to side-by-side,
+      // which is a fair break for having backed it into a wall.
+      const gx = clamp(s.x - Math.cos(sa) * g, 10, VW - 10) - e.x;
+      const gy = clamp(s.y - Math.sin(sa) * g, 10, VH - 10) - e.y;
       const gd = Math.hypot(gx, gy);
       if (gd > 0.5) {
         const step = Math.min(gd, e.sp * ESCORT_CATCHUP * dt);
