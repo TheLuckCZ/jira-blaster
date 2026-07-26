@@ -953,7 +953,13 @@ let player, bullets, enemies, particles, floaters, pickups;
 let sprint, phase, breakTimer, spawnQueue, spawnTimer, spawnInterval, meetingCd;
 // Sprint deadline: seconds until "standup". When it hits, every live and future
 // ticket of the sprint enrages (faster, red, worth ×1.5). Boss sprints untimed.
-let deadlineT = 0, enraged = false;
+let deadlineT = 0;
+// Tickets that outlived their sprint. They're swept off the field into three
+// edge cages — one per area — and released all at once when the next sprint
+// starts. Entries are the live enemy objects themselves, so hp, BLOCKED BY
+// links and every other bit of state survive the trip.
+let backlog = [];
+const BACKLOG_MAX = 24; // past this the oldest get written off — see sweepToBacklog
 let combo, comboT, hitFreeze, culprit;
 // The boss fight in progress: its live parts (Merge Conflict has two), the
 // roster entry driving the name/colour, and the title card's fade timer.
@@ -1150,7 +1156,7 @@ function startGame() {
   bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
   sprint = 1; phase = 'break'; breakTimer = 2.5;
   spawnQueue = []; spawnTimer = 0; spawnInterval = 1; meetingCd = 6;
-  deadlineT = 0; enraged = false;
+  deadlineT = 0; backlog = [];
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
 }
@@ -1177,6 +1183,84 @@ function buildSprint(n) {
   return q;
 }
 
+// ---------------------------------------------------------------- backlog
+// Three holding pens, one per area, each on the edge that area's language
+// fires from: frontend piles up on the left, backend along the top, infra on
+// the right. Sized as fractions so they follow the phone's wider playfield.
+function cageRect(area) {
+  if (area === 'be') return { x: VW * 0.24, y: 30, w: VW * 0.52, h: 15, horiz: true };
+  const h = VH * 0.54, y = VH * 0.24;
+  return area === 'fe' ? { x: 3, y, w: 15, h, horiz: false }
+                       : { x: VW - 18, y, w: 15, h, horiz: false };
+}
+
+// Where the i-th of n tickets sits inside its pen. They stack from the near
+// end so a pen visibly fills as work piles up; past what fits, the step
+// shrinks and they overlap rather than spilling out.
+function cageSlot(area, i, n) {
+  const r = cageRect(area);
+  const span = r.horiz ? r.w : r.h;
+  const step = Math.min(10, (span - 8) / Math.max(1, n));
+  const along = (r.horiz ? r.x : r.y) + 4 + step * (i + 0.5);
+  return r.horiz ? { x: along, y: r.y + r.h / 2 } : { x: r.x + r.w / 2, y: along };
+}
+
+// Sprint's up. Everything still breathing — plus everything that never got to
+// spawn — is swept off the field into the cages instead of vanishing for free.
+function sweepToBacklog() {
+  const caged = [];
+  for (const e of enemies) {
+    if (e.boss || e.type === 'meeting') continue;
+    addParticles(e.x, e.y, AREAS[e.area].color, 9, 90);
+    caged.push(e);
+  }
+  enemies.length = 0; // meetings expire with the sprint; everything else is caged
+  for (const type of spawnQueue) { // never-spawned tickets are unfinished work too
+    caged.push(makeEnemy(type, VW / 2, VH / 2));
+    enemies.pop(); // makeEnemy puts it on the field; this one belongs in a pen
+  }
+  spawnQueue.length = 0;
+
+  // A ticket that rotted through a sprint comes back angry. The speed-up lands
+  // once — otherwise re-caging the same ticket compounds it into a blur.
+  for (const e of caged) if (!e.enraged) { e.sp *= 1.5; e.enraged = true; }
+
+  backlog = backlog.concat(caged);
+  let writtenOff = 0;
+  if (backlog.length > BACKLOG_MAX) {
+    // Left to grow, a bad sprint snowballs into an unplayable wall. The oldest
+    // tickets rot out of the backlog as won't-fix.
+    writtenOff = backlog.length - BACKLOG_MAX;
+    backlog = backlog.slice(-BACKLOG_MAX);
+  }
+  return { caged: caged.length, writtenOff };
+}
+
+// Standup's over: every pen opens at once and the carry-over comes at you
+// together, while the new sprint's tickets trickle in on their usual schedule.
+function releaseBacklog() {
+  if (!backlog.length) return;
+  for (const area of AREA_KEYS) {
+    const list = backlog.filter(e => e.area === area);
+    list.forEach((e, i) => {
+      const s = cageSlot(area, i, list.length);
+      e.x = s.x; e.y = s.y;
+      e.spawnT = 0; // they've had a whole standup to materialize
+      // fling them off their wall so the breakout reads, before they start hunting
+      const d = Math.hypot(VW / 2 - e.x, VH / 2 - e.y) || 1;
+      e.vx = (VW / 2 - e.x) / d * e.sp * 2.2;
+      e.vy = (VH / 2 - e.y) / d * e.sp * 2.2;
+      e.burstT = rnd(0.35, 0.6); // staggered so they fan out instead of marching
+      enemies.push(e);
+      addParticles(e.x, e.y, AREAS[area].color, 7, 110);
+    });
+  }
+  addFloater(player.x, player.y - 20, backlog.length + ' CARRIED OVER — BACKLOG RELEASED', '#ff5a6e', true);
+  sfx.siren();
+  shake += 7;
+  backlog = [];
+}
+
 function makeEnemy(type, x, y) {
   const def = ENEMY_TYPES[type];
   const e = {
@@ -1186,7 +1270,7 @@ function makeEnemy(type, x, y) {
     sp: def.sp * rnd(0.9, 1.1),
     r: def.r, score: def.score, img: def.img, scale: def.scale || 1,
     wobPhase: rnd(0, TAU), wobFreq: rnd(def.wobFreq[0], def.wobFreq[1]), wobAmp: def.wobAmp,
-    touchCd: 0, spawnT: 0.4, windup: false, grazed: false, grazeArmed: false, vx: 0, vy: 0,
+    touchCd: 0, spawnT: 0.4, windup: false, grazed: false, grazeArmed: false, vx: 0, vy: 0, burstT: 0,
     boss: def.boss || null,
   };
   enemies.push(e);
@@ -1410,7 +1494,6 @@ function spawnEnemy(type, side) {
   else { x = VW - inset; y = rnd(16, VH - 16); }
 
   const e = makeEnemy(type, x, y);
-  if (enraged && type !== 'meeting') { e.sp *= 1.5; e.enraged = true; } // late arrivals share the fury
   if (type === 'meeting') {
     // meetings don't hunt you — they drift across the office, soaking up letters
     const tx = side === 2 ? VW + 24 : side === 3 ? -24 : rnd(VW * 0.2, VW * 0.8);
@@ -1425,7 +1508,6 @@ function spawnEnemy(type, side) {
   if (type === 'story' && sprint >= 3 && sprint % 4 !== 0 && Math.random() < 0.25) {
     const b = makeEnemy('bug', clamp(x + rnd(-28, 28), 12, VW - 12), clamp(y + rnd(-28, 28), 12, VH - 12));
     b.spawnT = 0.45;
-    if (enraged) { b.sp *= 1.5; b.enraged = true; }
     e.blockedBy = b;
     e.score = Math.round(e.score * 1.6); // shielded tickets pay better
   }
@@ -1644,22 +1726,21 @@ function update(dt) {
       spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1));
       spawnTimer = 0;
       // the sprint has a standup deadline; boss fights are untimed
-      enraged = false;
-      deadlineT = sprint % 4 === 0 ? 0 : 20 + spawnQueue.length * 0.7;
+      // carry-over counts against the clock too — a sprint that inherits a
+      // backlog gets the time to work it, but no more than that
+      deadlineT = sprint % 4 === 0 ? 0 : 20 + (spawnQueue.length + backlog.length) * 0.7;
       sfx.wave();
       if (sprint % 4 === 0) spawnBoss(sprint); // boss sprints are the boss, alone
+      releaseBacklog(); // the pens open the moment the standup ends
     }
   } else {
-    // standup deadline: when it hits, everything left (and still spawning) enrages
+    // The standup deadline ends the sprint. Whatever is still alive doesn't
+    // get cleared for free — it's swept into the cages and comes back next
+    // sprint, angrier, on top of that sprint's own tickets.
+    let timedOut = false;
     if (deadlineT > 0) {
       deadlineT -= dt;
-      if (deadlineT <= 0) {
-        enraged = true;
-        for (const e of enemies) if (!e.boss && e.type !== 'meeting') { e.sp *= 1.5; e.enraged = true; }
-        addFloater(p.x, p.y - 20, 'STANDUP! THE BACKLOG IS FURIOUS', '#ff5a6e', true);
-        sfx.siren();
-        shake += 6;
-      }
+      if (deadlineT <= 0) timedOut = true;
     }
     spawnTimer -= dt;
     if (spawnQueue.length && spawnTimer <= 0) {
@@ -1672,14 +1753,25 @@ function update(dt) {
       if (enemies.filter(e => e.type === 'meeting').length < 2) spawnEnemy('meeting');
       meetingCd = rnd(8, 14);
     }
-    if (!spawnQueue.length && !enemies.some(e => e.type !== 'meeting')) {
+    const cleared = !spawnQueue.length && !enemies.some(e => e.type !== 'meeting');
+    if (cleared || timedOut) {
       const wasBoss = sprint % 4 === 0;
-      const bonus = Math.round((50 + sprint * 25) * (wasBoss ? 3 : 1) * assistMul());
+      // Clearing the board early still pays in full; running out the clock
+      // pays a third and hands the remainder to next sprint.
+      const swept = cleared ? { caged: 0, writtenOff: 0 } : sweepToBacklog();
+      const bonus = Math.round((50 + sprint * 25) * (wasBoss ? 3 : 1) * (cleared ? 1 : 0.33) * assistMul());
       score += bonus;
       if (wasBoss) { bossDef = null; bossMaxHp = 0; }
-      deadlineT = 0; enraged = false;
-      clearMsg = (wasBoss ? 'BOSS DOWN!  +' : 'SPRINT ' + sprint + ' CLEAR!  +') + bonus;
-      addFloater(p.x, p.y - 14, '+' + bonus, '#3fe08a');
+      deadlineT = 0;
+      if (cleared) {
+        clearMsg = (wasBoss ? 'BOSS DOWN!  +' : 'SPRINT ' + sprint + ' CLEAR!  +') + bonus;
+      } else {
+        clearMsg = 'SPRINT ' + sprint + ' OVER — ' + swept.caged + ' TO BACKLOG'
+          + (swept.writtenOff ? '  (' + swept.writtenOff + ' WRITTEN OFF)' : '');
+        sfx.hurt();
+        shake += 6;
+      }
+      addFloater(p.x, p.y - 14, '+' + bonus, cleared ? '#3fe08a' : '#ffb43d');
       sprint++;
       phase = 'break';
       breakTimer = sprint % 4 === 0 ? 3.5 : 3; // extra beat before a boss
@@ -1711,7 +1803,12 @@ function update(dt) {
     const ux = dx / d, uy = dy / d;
     // bosses run a state machine first, and may take over their own movement
     const selfMoved = e.boss ? bossBehave(e, dt, ux, uy) : false;
-    if (!selfMoved) {
+    if (e.burstT > 0) {
+      // just kicked out of a cage: it flies its own line clear of the wall
+      // before it settles into hunting you
+      e.burstT -= dt;
+      e.x += e.vx * dt; e.y += e.vy * dt;
+    } else if (!selfMoved) {
       // seek player; wobble amplitude is part of the type's identity.
       // Flankers steer through a rotated approach vector: far away they move
       // sideways around your gun line, homing straight only once they're close.
@@ -1947,7 +2044,7 @@ function draw() {
       ctx.strokeStyle = '#7fe0ff';
       ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
     }
-    // enraged (missed the standup): constant furious red border
+    // carried over from a previous sprint: constant furious red border
     if (e.enraged) {
       ctx.strokeStyle = Math.floor(t * 10) % 2 === 0 ? '#ff5a6e' : '#ff8a5c';
       ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
@@ -2038,6 +2135,8 @@ function draw() {
   drawHud();
 
   if (state === 'play' && bossBanner > 0 && bossDef) drawBossBanner();
+
+  if (state === 'play' && phase === 'break' && backlog.length) drawCages();
 
   if (state === 'play' && phase === 'break') {
     ctx.textAlign = 'center';
@@ -2164,6 +2263,58 @@ function drawBossBanner() {
   ctx.globalAlpha = 1;
 }
 
+// The backlog made visible: three pens holding what didn't get finished,
+// rattling against the bars while the standup counts down. Each carries an
+// honest count, since past a dozen the tickets inside stack on top of one
+// another rather than spilling out of the pen.
+function drawCages() {
+  ctx.lineWidth = 1;
+  for (const area of AREA_KEYS) {
+    const list = backlog.filter((e) => e.area === area);
+    const r = cageRect(area);
+    const col = AREAS[area].color;
+    const lit = list.length > 0;
+
+    ctx.fillStyle = 'rgba(8,12,24,0.78)';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = lit ? col : '#2a3048';
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+
+    // bars across the short axis — reads as a cage, not a progress bar
+    ctx.globalAlpha = lit ? 0.5 : 0.22;
+    const span = r.horiz ? r.w : r.h;
+    for (let b = 1; b < 6; b++) {
+      const at = Math.round((r.horiz ? r.x : r.y) + span * b / 6) + 0.5;
+      ctx.beginPath();
+      if (r.horiz) { ctx.moveTo(at, r.y + 1); ctx.lineTo(at, r.y + r.h - 1); }
+      else { ctx.moveTo(r.x + 1, at); ctx.lineTo(r.x + r.w - 1, at); }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    list.forEach((e, i) => {
+      const s = cageSlot(area, i, list.length);
+      const j = Math.sin(breakTimer * 9 + i * 1.7) * 1.2; // they want out
+      const x = Math.round(s.x + (r.horiz ? 0 : j)) - 3;
+      const y = Math.round(s.y + (r.horiz ? j : 0)) - 4;
+      ctx.fillStyle = '#0d1220';
+      ctx.fillRect(x, y, 6, 8);
+      ctx.fillStyle = col; // same left-edge area stripe it wears on the field
+      ctx.fillRect(x, y, 2, 8);
+      ctx.fillStyle = '#5a6a90';
+      ctx.fillRect(x + 3, y + 2, 3, 1);
+      ctx.fillRect(x + 3, y + 4, 3, 1);
+    });
+
+    if (lit) {
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = col;
+      ctx.fillText(list.length, r.x + r.w / 2, r.y - 3);
+    }
+  }
+}
+
 function drawHud() {
   const p = player;
   // coffee cups = HP. Panel grows with promotions (+1 max cup per 5 sprints).
@@ -2196,9 +2347,11 @@ function drawHud() {
     drawBossBar(); // the boss owns this strip while it lives
   } else if (phase === 'wave') {
     ctx.font = '8px monospace';
-    ctx.fillStyle = enraged ? '#ff5a6e' : deadlineT > 0 && deadlineT < 10 ? '#ff8a5c' : '#8f8fa8';
-    ctx.fillText((spawnQueue.length + enemies.length) + ' in backlog'
-      + (deadlineT > 0 ? ' · standup in ' + Math.ceil(deadlineT) + 's' : enraged ? ' · FURIOUS!' : ''), VW / 2, 21);
+    // the clock now ends the sprint rather than enraging it, so it reads hot
+    // early: orange under 10s, red under 5 — anything left when it hits is carried
+    ctx.fillStyle = deadlineT <= 0 ? '#8f8fa8' : deadlineT < 5 ? '#ff5a6e' : deadlineT < 10 ? '#ff8a5c' : '#8f8fa8';
+    ctx.fillText((spawnQueue.length + enemies.length) + ' in sprint'
+      + (deadlineT > 0 ? ' · standup in ' + Math.ceil(deadlineT) + 's' : ''), VW / 2, 21);
   }
 
   // score
@@ -2378,7 +2531,7 @@ function jumpToSprint(n) {
   bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
   spawnQueue = []; spawnTimer = 0; meetingCd = 6;
-  deadlineT = 0; enraged = false;
+  deadlineT = 0; backlog = [];
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   clearMsg = '';
   player.maxHp = 3 + Math.floor((n - 1) / 8); // one promotion per 2nd boss cleared before now

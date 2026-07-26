@@ -85,8 +85,20 @@ type — one glance is full information:
   the game freeze-frames for 0.5s and highlights the ticket that got you. Every
   2nd boss cleared (reaching sprint 9, 17, 25 …) is a **promotion**: your
   cup maximum grows by one, poured full.
-- **Standup deadline:** every regular sprint has a countdown; when it hits, the
-  remaining backlog **enrages** — 50% faster, red, worth ×1.5 SP.
+- **Standup deadline:** every regular sprint runs on a countdown (boss sprints
+  don't). Clear the board before it hits and you bank the full clear bonus. Let
+  it run out and the sprint ends anyway — but nothing is cleared for free.
+- **The backlog:** whatever is still alive when the clock runs out — plus
+  anything that never got to spawn — is swept into three holding pens, one per
+  area, on the edge that area's language fires from: **Frontend left, Backend
+  top, Infrastructure right**. They rattle there through the standup countdown,
+  then the pens open all at once as the next sprint starts, on top of that
+  sprint's own tickets arriving normally. Carried-over tickets come back
+  **enraged** — 50% faster, red, worth ×1.5 SP — and timing out pays only a
+  third of the clear bonus. The next sprint's clock grows to account for the
+  inherited work. The backlog caps at 24; past that the oldest tickets rot out
+  as won't-fix, which is the only thing stopping one bad sprint from
+  snowballing into an unplayable wall.
 - **BLOCKED BY:** some Stories arrive shielded, linked to a blocker Bug — the
   Story can't be damaged until its blocker is resolved. Kill order matters.
 - **Areas & languages:** every ticket belongs to an area, shown as the colored
