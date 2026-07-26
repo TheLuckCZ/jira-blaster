@@ -93,14 +93,23 @@ type — one glance is full information:
   area, on the edge that area's language fires from: **Frontend left, Backend
   top, Infrastructure right**. They rattle there through the standup countdown,
   then the pens open all at once as the next sprint starts, on top of that
-  sprint's own tickets arriving normally. Carried-over tickets come back
+  sprint's own tickets arriving normally — except before a **boss sprint**,
+  where they stay shut and wait one more sprint, since a boss sprint has no
+  clock and anything released into it would have to be killed to end the
+  sprint. Carried-over tickets come back
   **enraged** — 50% faster, red, worth ×1.5 SP — and timing out pays only a
   third of the clear bonus. The next sprint's clock grows to account for the
   inherited work. The backlog caps at 24; past that the oldest tickets rot out
   as won't-fix, which is the only thing stopping one bad sprint from
   snowballing into an unplayable wall.
 - **BLOCKED BY:** some Stories arrive shielded, linked to a blocker Bug — the
-  Story can't be damaged until its blocker is resolved. Kill order matters.
+  Story can't be damaged until its blocker is resolved. The pair arrives as a
+  **formation**: the shielded Story leads, and the blocker escorts it from
+  directly behind, matching its speed and its straight line. Since a blocked
+  Story eats your letters, the big immune card is a moving wall with the fix
+  hiding behind it — shooting head-on gets you nothing. The blocker can only
+  swing around the Story so fast, so **closing in and strafing** is what opens
+  an angle on it; standing off at range never will.
 - **Areas & languages:** every ticket belongs to an area, shown as the colored
   stripe on its left edge — **Frontend** (red), **Backend** (green),
   **Infrastructure** (blue). Shooting it with the matching language (letters

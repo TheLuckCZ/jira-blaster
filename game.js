@@ -1255,6 +1255,15 @@ function releaseBacklog() {
       addParticles(e.x, e.y, AREAS[area].color, 7, 110);
     });
   }
+  // A pair's two halves have their own areas, so they get penned separately —
+  // re-form them on the way out, or the shield arrives on the far side of the
+  // room from the ticket it's supposed to be shielding.
+  for (const e of enemies) {
+    if (!e.blockedBy || !enemies.includes(e.blockedBy)) continue;
+    const b = e.blockedBy;
+    tuckBlocker(e, b);
+    b.vx = e.vx; b.vy = e.vy; b.burstT = e.burstT; // break out as one unit
+  }
   addFloater(player.x, player.y - 20, backlog.length + ' CARRIED OVER — BACKLOG RELEASED', '#ff5a6e', true);
   sfx.siren();
   shake += 7;
@@ -1483,6 +1492,32 @@ function killBoss(e, gained) {
   return over;
 }
 
+// How much faster than the ticket it escorts a blocker may move while getting
+// back into its slot. This one number is the whole difficulty of a BLOCKED BY
+// pair: it caps how fast the shield can swing around to face you, so a player
+// who closes and strafes can open an angle on the blocker, while one standing
+// off at range never will. Too high and the pair is simply unkillable.
+const ESCORT_CATCHUP = 1.15;
+
+// Park a blocker just behind the ticket it blocks, on the far side from the
+// player, and make it move as part of that formation rather than as a bug.
+// A blocked ticket eats letters, so the pair arrives as a shield with the fix
+// hiding behind it: head-on there's no line to the blocker, and flanking the
+// formation is what breaks it open. Matching the story's speed and its
+// straight line is the other half — a loose bug is nearly twice a story's
+// speed and weaves besides, so it would just drive out in front of the thing
+// it's meant to be hiding behind and hand itself over.
+function tuckBlocker(story, b) {
+  const a = Math.atan2(player.y - story.y, player.x - story.x) + rnd(-0.22, 0.22);
+  const gap = story.r + b.r + 3; // sits clear of the separation shove
+  b.x = clamp(story.x - Math.cos(a) * gap, 12, VW - 12);
+  b.y = clamp(story.y - Math.sin(a) * gap, 12, VH - 12);
+  b.sp = story.sp;
+  b.wobAmp = story.wobAmp; b.wobFreq = story.wobFreq; b.wobPhase = story.wobPhase;
+  b.flank = 0;        // a blocker holds the line; it doesn't arc around it
+  b.blocks = story;   // and it escorts that ticket rather than hunting you
+}
+
 function spawnEnemy(type, side) {
   if (side === undefined) side = Math.floor(Math.random() * 4);
   const def = ENEMY_TYPES[type];
@@ -1506,8 +1541,9 @@ function spawnEnemy(type, side) {
   // BLOCKED BY: a shielded story that can't be damaged until its linked
   // blocker bug is resolved — kill order becomes a decision
   if (type === 'story' && sprint >= 3 && sprint % 4 !== 0 && Math.random() < 0.25) {
-    const b = makeEnemy('bug', clamp(x + rnd(-28, 28), 12, VW - 12), clamp(y + rnd(-28, 28), 12, VH - 12));
+    const b = makeEnemy('bug', x, y);
     b.spawnT = 0.45;
+    tuckBlocker(e, b);
     e.blockedBy = b;
     e.score = Math.round(e.score * 1.6); // shielded tickets pay better
   }
@@ -1685,6 +1721,10 @@ function update(dt) {
     let best = null, bd = Infinity;
     for (const e of enemies) {
       if (e.type === 'meeting' || e.spawnT > 0) continue;
+      // A blocked ticket eats letters exactly like a meeting does. Locking
+      // onto one burns the whole clip on something that can't be damaged —
+      // aim past it at the blocker, which is what's actually in the way.
+      if (e.blockedBy && enemies.includes(e.blockedBy)) continue;
       const dd = (e.x - p.x) * (e.x - p.x) + (e.y - p.y) * (e.y - p.y);
       if (dd < bd) { bd = dd; best = e; }
     }
@@ -1730,8 +1770,16 @@ function update(dt) {
       // backlog gets the time to work it, but no more than that
       deadlineT = sprint % 4 === 0 ? 0 : 20 + (spawnQueue.length + backlog.length) * 0.7;
       sfx.wave();
-      if (sprint % 4 === 0) spawnBoss(sprint); // boss sprints are the boss, alone
-      releaseBacklog(); // the pens open the moment the standup ends
+      if (sprint % 4 === 0) {
+        spawnBoss(sprint); // boss sprints are the boss, alone
+        // The pens stay shut through a boss fight. A boss sprint has no clock,
+        // so anything released into it must be killed for the sprint to end —
+        // and a BLOCKED BY pair that the player can't flank would deadlock the
+        // run outright. It also keeps "boss plus a full backlog" from being the
+        // hardest thing in the game by a wide margin. They wait one more sprint.
+      } else {
+        releaseBacklog(); // the pens open the moment the standup ends
+      }
     }
   } else {
     // The standup deadline ends the sprint. Whatever is still alive doesn't
@@ -1808,6 +1856,24 @@ function update(dt) {
       // before it settles into hunting you
       e.burstT -= dt;
       e.x += e.vx * dt; e.y += e.vy * dt;
+    } else if (e.blocks && enemies.includes(e.blocks)) {
+      // A blocker escorts the ticket it blocks instead of hunting you: it
+      // steers for the slot tucked behind that ticket. Matching speed alone
+      // isn't enough — two things homing on the player converge onto the same
+      // line and settle side by side, which is no shield at all.
+      // It may sprint to close the gap, but it can't rotate around the ticket
+      // faster than that, so strafing hard still opens an angle on it. That
+      // gap is the counterplay; without it the blocker would be unreachable
+      // and the pair unkillable.
+      const s = e.blocks;
+      const sa = Math.atan2(p.y - s.y, p.x - s.x);
+      const g = s.r + e.r + 3;
+      const gx = s.x - Math.cos(sa) * g - e.x, gy = s.y - Math.sin(sa) * g - e.y;
+      const gd = Math.hypot(gx, gy);
+      if (gd > 0.5) {
+        const step = Math.min(gd, e.sp * ESCORT_CATCHUP * dt);
+        e.x += gx / gd * step; e.y += gy / gd * step;
+      }
     } else if (!selfMoved) {
       // seek player; wobble amplitude is part of the type's identity.
       // Flankers steer through a rotated approach vector: far away they move
@@ -2153,6 +2219,12 @@ function draw() {
       const next = BOSSES[(Math.floor(sprint / 4) - 1) % BOSSES.length];
       ctx.fillStyle = '#ff8a5c';
       ctx.fillText('ESCALATED TO ' + next.name + ' — ' + Math.ceil(breakTimer) + '…', VW / 2, VH / 2 + 14);
+      // the pens stay shut for a boss — say so, or full cages that don't open
+      // just read as a bug
+      if (backlog.length) {
+        ctx.fillStyle = '#8f8fa8';
+        ctx.fillText('backlog frozen for the escalation', VW / 2, VH / 2 + 25);
+      }
     } else {
       ctx.fillStyle = '#8f8fa8';
       ctx.fillText('standup in ' + Math.ceil(breakTimer) + '…', VW / 2, VH / 2 + 14);
