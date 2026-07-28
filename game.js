@@ -1327,7 +1327,7 @@ function bossInit(e) {
   if (e.boss === 'conflict') { e.reviveT = 0; e.twin = null; e.revive = null; }
   if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); }
   if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; }
-  if (e.boss === 'flaky') { e.pass = true; e.phaseT = 1.7; }
+  if (e.boss === 'flaky') { e.pass = true; e.phaseT = cad(e, 1.7); e.fails = 0; e.blinkT = 0; }
 }
 
 function spawnBoss(n) {
@@ -1597,11 +1597,34 @@ function bossBehave(e, dt, ux, uy) {
     e.phaseT -= dt;
     if (e.phaseT <= 0) {
       e.pass = !e.pass;
-      e.phaseT = e.pass ? 1.7 : 1.2;
+      e.phaseT = e.pass ? cad(e, 1.7) : cad(e, 1.2);
       addFloater(e.x, e.y - e.r - 8, e.pass ? 'PASS' : 'FAIL — IMMUNE', e.pass ? '#3fe08a' : '#ff5a6e');
       sfx.ding();
+      // every third failure it just runs the suite again, somewhere else
+      if (!e.pass && ++e.fails % 3 === 0) {
+        e.blinkT = 0.3;
+        addFloater(e.x, e.y - e.r - 16, 'RETRYING…', '#c9a8ff');
+      }
     }
-    return false;
+    if (e.blinkT > 0) {
+      e.blinkT -= dt;
+      if (e.blinkT <= 0) {
+        const a = rnd(0, TAU);
+        e.x = clamp(e.x + Math.cos(a) * 80, e.r, VW - e.r);
+        e.y = clamp(e.y + Math.sin(a) * 80, e.r, VH - e.r);
+        e.spawnT = 0.3; // lands inert and pulsing, like anything materializing
+        addParticles(e.x, e.y, '#c9a8ff', 10, 90);
+      }
+      return true; // it holds still through the flicker — that's the telegraph
+    }
+    // Inverted pursuit: it flees while it's hittable and hunts you while it
+    // isn't, so the damage window is a chase and the immune window is a dodge.
+    // Spraying through FAIL was free before; now it costs ground as well as HP.
+    const sp = e.sp * (e.pass ? -0.8 : 1.3);
+    const wob = Math.sin(t * e.wobFreq + e.wobPhase) * e.wobAmp;
+    e.x += (ux + -uy * wob) * sp * dt;
+    e.y += (uy + ux * wob) * sp * dt;
+    return true;
   }
   return false;
 }
@@ -2210,6 +2233,12 @@ function update(dt) {
           // meeting invites block your letters — infinite HP, zero shame.
           // A boss in its immune window, or a BLOCKED BY ticket whose blocker
           // still lives, shrugs them off the same way.
+          // A failing test doesn't shrug it off, though — it eats it. Holding
+          // the trigger through FAIL is now how you lose the fight.
+          if (e.boss === 'flaky') {
+            e.hp = Math.min(e.maxHp, e.hp + 0.5);
+            if (!e.fedHint) { e.fedHint = true; addFloater(e.x, e.y - e.r - 8, 'IT FED ON THAT', '#c9a8ff'); }
+          }
           addParticles(b.x, b.y, '#5a6a90', 3, 40);
           sfx.block();
           continue outer;
