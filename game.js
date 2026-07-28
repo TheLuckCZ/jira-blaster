@@ -1320,7 +1320,7 @@ function bossInit(e) {
   if (e.boss === 'monolith') { e.langT = 3.2; e.shedT = 4.5; e.shedStep = Math.round(e.maxHp / 7); e.nextShed = e.maxHp - e.shedStep; }
   if (e.boss === 'screep') { e.growT = 3; e.grown = 0; }
   if (e.boss === 'conflict') { e.reviveT = 0; e.twin = null; e.revive = null; }
-  if (e.boss === 'mtgboss') { e.cycleT = 3; e.open = false; e.callT = 4; }
+  if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); }
   if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; }
   if (e.boss === 'flaky') { e.pass = true; e.phaseT = 1.7; }
 }
@@ -1376,6 +1376,23 @@ const outageDashes = (e) => ((e.lap || 0) >= 1 ? 3 : 2);
 function shedDebt(e, n) {
   spawnMinion('bug', e, n);
   addFloater(e.x, e.y - e.r - 6, 'TECH DEBT!', '#8fa8d8');
+}
+
+// How close you have to be for The Endless Meeting to consider you an
+// attendee, how hard it drags you in, and how close a resolved attendee has
+// to be for the room to notice and lose its thread.
+const ATTENDANCE_R = 130;
+const MEETING_PULL = 28;   // u/s — noticeable, never faster than the chair
+const DERAIL_R = 60;
+
+// The only real way into the agenda: something interrupts it. Called both by
+// the boss losing its own thread and by a kill inside DERAIL_R.
+function openMeeting(e, secs, why) {
+  e.open = true;
+  e.cycleT = Math.max(e.cycleT, secs);
+  e.selfT = cad(e, 6);
+  addFloater(e.x, e.y - e.r - 8, why, '#3fe08a');
+  sfx.crit();
 }
 
 // A Merge Conflict twin killed alone comes back at half strength.
@@ -1455,17 +1472,38 @@ function bossBehave(e, dt, ux, uy) {
     return true;
   }
   if (e.boss === 'mtgboss') {
-    // letters bounce off the agenda; they land only while someone derails it
-    e.cycleT -= dt;
-    if (e.cycleT <= 0) {
-      e.open = !e.open;
-      e.cycleT = e.open ? 2.6 : 2.6; // half the meeting is derailed — hit it then
-      addFloater(e.x, e.y - e.r - 8, e.open ? 'SOMEONE ASKED A QUESTION' : 'AGENDA RESUMES',
-        e.open ? '#3fe08a' : '#8f8fa8');
-      if (e.open) sfx.crit(); else sfx.block();
+    // Letters bounce off the agenda; they land only while someone derails it.
+    // The old fixed open/closed cycle ignored the player entirely — you waited
+    // your turn. Now the window is something you cause: resolve an attendee
+    // next to the boss and the room looks up (see killEnemy). Left alone it
+    // still loses the thread every 6s, so it can never hard-lock the fight.
+    if (e.open) {
+      e.cycleT -= dt;
+      if (e.cycleT <= 0) {
+        e.open = false;
+        addFloater(e.x, e.y - e.r - 8, 'AGENDA RESUMES', '#8f8fa8');
+        sfx.block();
+      }
+    } else {
+      e.selfT -= dt;
+      if (e.selfT <= 0) openMeeting(e, cad(e, 1.4), 'THE CHAIR LOST THE THREAD');
+      // mandatory attendance: stand too close while it's talking and it pulls
+      // you into the room. The ring it drags from is drawn on the floor.
+      const d = Math.hypot(player.x - e.x, player.y - e.y);
+      if (d > 1 && d < ATTENDANCE_R) {
+        const pull = MEETING_PULL * dt / d;
+        player.x = clamp(player.x + (e.x - player.x) * pull, player.r, VW - player.r);
+        player.y = clamp(player.y + (e.y - player.y) * pull, player.r, VH - player.r);
+      }
     }
     e.callT -= dt;
-    if (e.callT <= 0) { e.callT = 4; spawnMinion('story', e, 1); }
+    if (e.callT <= 0) {
+      e.callT = cad(e, 3);
+      // past halfway it stops calling them in one at a time
+      const split = e.hp < e.maxHp * 0.5;
+      spawnMinion('story', e, split ? 2 : 1);
+      if (split && !e.breakoutHint) { e.breakoutHint = true; addFloater(e.x, e.y - e.r - 8, 'BREAKOUT ROOMS', '#b9c4dd'); }
+    }
     return false;
   }
   if (e.boss === 'outage') {
@@ -1754,6 +1792,15 @@ function killEnemy(e, silent) {
   const shredColor = { bug: PAL.bug, story: PAL.story, epic: PAL.epic, hotfix: PAL.cup }[e.type] || PAL.paper;
   addParticles(e.x, e.y, '#dfe6ff', e.type === 'epic' ? 30 : 8, e.type === 'epic' ? 120 : 70);
   addParticles(e.x, e.y, shredColor, e.type === 'epic' ? 16 : 4, 60);
+  // An attendee resolved right next to The Endless Meeting is the interruption
+  // that opens it — kills are the key, so add control becomes the boss fight.
+  if (!e.boss) {
+    for (const b of bossParts) {
+      if (b.boss === 'mtgboss' && Math.hypot(e.x - b.x, e.y - b.y) < DERAIL_R) {
+        openMeeting(b, cad(b, 2.2), 'SOMEONE ASKED A QUESTION');
+      }
+    }
+  }
   if (e.boss) {
     killBoss(e, gained);
   } else if (e.type === 'epic') {
@@ -2430,6 +2477,14 @@ function draw() {
 function drawBossTells(e, ex, ey, w, h) {
   const cx = Math.round(e.x);
   if (e.boss === 'mtgboss') {
+    // the invite radius: cross it while the agenda is running and you're an
+    // attendee, dragged toward the table until it opens
+    if (!e.open) {
+      ctx.globalAlpha = 0.15;
+      ctx.strokeStyle = '#b9c4dd';
+      ctx.beginPath(); ctx.arc(e.x, e.y, ATTENDANCE_R, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     // the organizer pip — green means someone derailed the agenda, hit it now
     ctx.fillStyle = e.open ? '#3fe08a' : '#5a6a90';
     ctx.fillRect(cx - 3, Math.round(e.y) - 3, 6, 6);
