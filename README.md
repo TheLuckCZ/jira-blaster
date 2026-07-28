@@ -140,19 +140,30 @@ a name and HP bar in the HUD, and pays triple the sprint bonus plus a guaranteed
 coffee + duck + energy drink on death.
 
 Each is built around a mechanic the game already teaches, and every immune or
-vulnerable window is telegraphed on the card before it matters:
+vulnerable window is telegraphed on the card before it matters. Bosses are also
+the only things that **throw code back at you** — grey glyphs and burning ground
+that ignore your letters completely. You cannot shoot a stack trace down; the
+only answer is to not be standing there.
 
 | # | Boss | The fight |
 | --- | --- | --- |
-| 5 | **THE LEGACY MONOLITH** | Huge, slow, enormous HP. Its area stripe **rotates FE→BE→INFRA every 3.2s**, so the ×2 matchup keeps moving and you must keep switching 1/2/3. **Sheds tech debt** — spawns Bugs on a timer *and* every time it loses a seventh of its HP. |
-| 10 | **SCOPE CREEP** | Starts small and **grows every 3s** — bigger, faster, +10 max HP, and buds off a Story each time ("…and a dark mode"). Caps after 6 growths at ~2.3× size. On death it splits into everything it accreted (up to 7 Stories). Kill it early or drown. |
-| 15 | **MERGE CONFLICT** | **Twins**, `<<<` and `>>>`, linked by a visible line. Kill one alone and it **reopens at half HP** after 3.2s — so both must die inside that window. While the window is open the survivor takes **×2 damage**, and each reopen returns weaker, so the fight always converges. |
-| 20 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters** like a meeting invite does. Its organizer pip goes **green for 2.6s** when someone derails the agenda — that is the only window damage lands. Calls in attendees while it talks. |
-| 25 | **P0 MEGAOUTAGE** | Charge-dashes across the arena: **aim** (telegraphed with a red line straight through you) → **dash** → **down**. While it is down the incident is being handled and it takes **×2 damage** — that is your whole DPS window. |
-| 30 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune) on a rhythm. Passes locally. Sometimes. Pure shot-timing. |
+| 4 | **THE LEGACY MONOLITH** | Huge, slow, enormous HP. Its area stripe **rotates FE→BE→INFRA every 3.2s**, so the ×2 matchup keeps moving and you must keep switching 1/2/3. **Sheds tech debt** — Bugs on a timer *and* every seventh of its HP. It can't reach you, so it **throws the stack trace**: a ring of 9 glyphs fired outward, a glow and a pager tone ahead of it. And it **wakes up** — glacial at full HP, better than twice that speed as it comes apart. |
+| 8 | **SCOPE CREEP** | Grows every 3s — bigger, faster, +10 max HP, and buds off a Story each time ("…and a dark mode"). But the growth clock **only runs while nobody is pushing back**: sustained fire freezes it, and it restarts 1.2s after you turn away. Every growth throws two requirement docs at your head and sends its Story out on a **flanking arc**. Caps at 6 growths. On death it splits into everything it accreted. |
+| 12 | **MERGE CONFLICT** | **Twins**, `<<<` and `>>>`, linked by a visible line. They **pincer** — each steers for the point opposite its twin across you, so they arrive from both sides instead of queueing up. While they are within 90px of each other they are **rebasing** and take **half damage**: letting them converge on you is exactly what makes them tanky. Kill one alone and it **reopens at half HP** after 3.2s, with the survivor taking **×2** during the window. |
+| 16 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters**. It starts closed, and the window is something you **cause**: resolve an attendee right next to it (within 60px) and the room looks up for 2.2s. Left alone it only loses its own thread every 6s, briefly. **Mandatory attendance** — stand inside the ring drawn on the floor and it drags you into the room. Past half HP it calls attendees two at a time. |
+| 20 | **P0 MEGAOUTAGE** | **aim → dash → re-aim → dash → down.** Two chained charges, each re-reading where you actually are, so one sidestep no longer settles it. Then it goes down and the incident window opens: **×2 damage**. The route it took **stays on fire** — a long fight slowly costs you the room rather than only the moment. |
+| 24 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on blind fire** — every letter you spray into FAIL heals it, so holding the trigger through the immune window is how you lose. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**, making the damage window a chase and the immune window a dodge. Every third failure it just **retries somewhere else**. |
 
-The roster then cycles — sprint 35 is the Monolith again — and every full lap
-scales HP and payout by **+55%**.
+The roster then cycles — sprint 28 is the Monolith again — and a full lap does
+more than pad HP. Alongside **+55% HP and payout**, every timer in the fight
+runs ~12% quicker, everything moves 8% faster, and the fights themselves change:
+Scope Creep grows eight times instead of six, the Outage links a **third** dash,
+the Monolith sheds debt in pairs. A boss past the first lap also pours a second
+coffee when it dies.
+
+And no boss lets you kite it forever. Boss sprints have no clock, so after
+**75 seconds** the fight stops being polite — everything speeds up and every
+cadence halves. It is pressure, not a fail state: the sprint review is waiting.
 
 ## The standup board (leaderboard)
 
