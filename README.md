@@ -28,12 +28,15 @@ dev below it, the eight appearance rows beside them.
 | ↑ / ↓ | Move between appearance rows |
 | ← / → | Change the selected option (wraps) |
 | TAB | Randomize the whole look |
-| ENTER | Start sprint 1 |
-| ESC | Back to the title |
+| ENTER | Start sprint 1 — or, mid-run, back into the fight wearing the changes |
+| ESC | Back to the title — or, mid-run, back to the pause screen |
 | Click / tap | Every swatch and button is also a click target |
 
 Both the name and the look are remembered in `localStorage`, so a returning dev
-just presses ENTER.
+just presses ENTER. The same screen is reachable **mid-run** from the pause
+overlay (`C`, or the button on it), where it reads EDIT YOUR DEV and returns you
+to the run you were in rather than starting a new one — changes apply on the
+spot, so you never have to die to restyle.
 
 | Input | Action in a run |
 | --- | --- |
@@ -45,6 +48,7 @@ just presses ENTER.
 | Space | Fire along the current facing (hold for the full letter-stream) |
 | Click / tap | Also fires |
 | P / Esc | Pause ("in a meeting") |
+| C | While paused: **edit your dev** — the customizer, then straight back into the same run |
 | M | Mute |
 | R | Restart after burnout |
 

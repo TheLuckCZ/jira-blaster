@@ -896,6 +896,7 @@ addEventListener('keydown', (e) => {
   if (k === 'p' || k === 'escape') {
     if (state === 'play') { paused = !paused; if (paused) loadBoard(); }
   }
+  if (k === 'c' && state === 'play' && paused) openSetup('play');
   if (k === 'r' && state === 'over') startGame();
   if (state === 'menu' && k === ' ') openSetup();
 });
@@ -927,10 +928,11 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   if (state === 'over') { if (overTimer > 0.8) startGame(); return; }
-  if (state === 'play' && paused && debugMode) {
+  if (state === 'play' && paused) {
     const q = canvasPos(e);
-    for (const h of debugHits) if (inRect(q, h)) { h.act(); return; } // jump to a sprint
-    return; // clicks on the debug pause overlay never fire the gun
+    for (const h of pauseHits) if (inRect(q, h)) { h.act(); return; }  // edit your dev
+    if (debugMode) for (const h of debugHits) if (inRect(q, h)) { h.act(); return; } // jump to a sprint
+    return; // clicks on the pause overlay never fire the gun
   }
   mouse.down = true; // click/tap = fire along the current facing
 });
@@ -989,6 +991,11 @@ let nameInput = playerName;
 let setupShownAt = 0;  // menuT when the screen opened — swallows the click that opened it
 let setupRow = 0;      // which LOOK_GROUPS row the arrow keys are on
 const setupHits = [];  // click targets, rebuilt by drawSetup() every frame
+// Where leaving the setup screen goes back to. 'menu' is the cold start; 'play'
+// means it was opened from a paused run, which must be resumed rather than
+// restarted — a mid-run visit that called startGame() would wipe the run.
+let setupReturn = 'menu';
+const pauseHits = []; // click targets on the pause overlay, rebuilt every frame
 // Setup preview turntable: `devAngle` advances at DEV_SPIN while not frozen, and
 // drives BOTH the front turnaround and the top-down sprite so they stay locked.
 // Freezing (the FREEZE button, or a step arrow) lets you inspect a fixed angle.
@@ -1120,17 +1127,25 @@ function fmtWhen(iso) {
 }
 
 // ---------------------------------------------------------------- setup screen
-function openSetup() {
+function openSetup(from) {
+  setupReturn = from || 'menu';
   state = 'setup';
   setupShownAt = menuT;
   devSpinPaused = false;   // always arrive spinning
   lastDevT = menuT;        // so the first frame adds ~0, not a jump
 }
 
+// Back out without applying anything. From a mid-run visit this lands on the
+// pause overlay it came from — the run is still there, still paused.
+function closeSetup() {
+  state = setupReturn;
+  setupReturn = 'menu';
+}
+
 function setupKey(e) {
   const k = e.key;
   if (k === 'Enter') { confirmSetup(); return; }
-  if (k === 'Escape') { state = 'menu'; return; }
+  if (k === 'Escape') { closeSetup(); return; }
   if (k === 'Tab') { e.preventDefault(); randomizeLook(); return; }
   if (k === 'Backspace') { e.preventDefault(); nameInput = nameInput.slice(0, -1); return; }
   if (k === 'ArrowUp' || k === 'ArrowDown') {
@@ -1153,6 +1168,9 @@ function confirmSetup() {
   playerName = nameInput.trim() || DEFAULT_NAME;
   nameInput = playerName;
   try { localStorage.setItem('jiraBlasterName', playerName); } catch (e) { /* private mode */ }
+  // Mid-run, this is "done editing" and drops you straight back into the fight
+  // wearing the changes. Only a visit from the welcome screen starts a run.
+  if (setupReturn === 'play') { setupReturn = 'menu'; state = 'play'; paused = false; return; }
   startGame();
 }
 
@@ -2592,6 +2610,11 @@ function draw() {
     y += 14; ctx.fillText('(in a meeting — press P to escape)', VW / 2, y);
     drawBoard(y + 26, false); // a mid-run rank would be a lie — rows only
     if (debugMode) drawDebugLevels(); // left-column level jumper
+    // Changing your dev is the one thing you could only do before a run, which
+    // meant dying for it. Centred so it clears the debug column on the left.
+    pauseHits.length = 0;
+    ctx.font = 'bold 10px monospace';
+    uiButton(pauseHits, VW / 2 - 84, VH - 44, 168, 24, 'C — EDIT YOUR DEV', '#8a63ff', () => openSetup('play'));
   }
 
   if (state === 'over') drawGameOver();
@@ -2874,7 +2897,7 @@ function drawMenu() {
 
   // bottom-right: forward to the next page (create-your-dev)
   ctx.font = 'bold 10px monospace';
-  uiButton(menuHits, VW - 132, VH - 34, 120, 24, 'CREATE DEV ›', '#3fe08a', openSetup);
+  uiButton(menuHits, VW - 132, VH - 34, 120, 24, 'CREATE DEV ›', '#3fe08a', () => openSetup('menu'));
 
   drawDebugToggle(cx, 330); // the debug slider lives at the bottom of the title screen
 }
@@ -3012,10 +3035,14 @@ function drawSetup() {
   setupHits.length = 0;
   const lx = 116; // centre of the left column
 
+  // mid-run the screen is an edit, not a character creation — say so, or
+  // "CREATE" reads like the run is about to be thrown away
+  const editing = setupReturn === 'play';
+  const heading = editing ? 'EDIT YOUR DEV' : 'CREATE YOUR DEV';
   ctx.textAlign = 'center';
   ctx.font = 'bold 13px monospace';
-  ctx.fillStyle = '#080c18'; ctx.fillText('CREATE YOUR DEV', lx + 1, 19);
-  ctx.fillStyle = '#ffd23f'; ctx.fillText('CREATE YOUR DEV', lx, 18);
+  ctx.fillStyle = '#080c18'; ctx.fillText(heading, lx + 1, 19);
+  ctx.fillStyle = '#ffd23f'; ctx.fillText(heading, lx, 18);
 
   // name field — it goes on the standup board and above the chair in-game
   const bw = 180, bh = 22, bx = lx - bw / 2, by = 28;
@@ -3119,8 +3146,8 @@ function drawSetup() {
   // page navigation: bottom-left back to the welcome screen, bottom-right into
   // the game — mirrors the title screen's forward button
   ctx.font = 'bold 10px monospace';
-  btn(8, VH - 34, 68, 24, '‹ BACK', '#5a6a90', () => { state = 'menu'; });
-  btn(VW - 108, VH - 34, 96, 24, 'PLAY ›', '#3fe08a', confirmSetup);
+  btn(8, VH - 34, 68, 24, '‹ BACK', '#5a6a90', closeSetup);
+  btn(VW - 108, VH - 34, 96, 24, editing ? 'RESUME ›' : 'PLAY ›', '#3fe08a', confirmSetup);
 }
 
 function drawGameOver() {
