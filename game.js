@@ -1317,7 +1317,12 @@ const cad = (e, secs) => secs * (e.cad || 1);
 
 // Per-boss state, set after the HP scaling in spawnBoss so thresholds match.
 function bossInit(e) {
-  if (e.boss === 'monolith') { e.langT = 3.2; e.shedT = 4.5; e.shedStep = Math.round(e.maxHp / 7); e.nextShed = e.maxHp - e.shedStep; }
+  if (e.boss === 'monolith') {
+    e.langT = cad(e, 3.2); e.shedT = cad(e, 4.5);
+    e.shedStep = Math.round(e.maxHp / 7); e.nextShed = e.maxHp - e.shedStep;
+    e.traceT = cad(e, 5); e.traceWind = 0;
+    e.spBase = e.sp; // rage scales off this — see the monolith branch in bossBehave
+  }
   if (e.boss === 'screep') { e.growT = 3; e.grown = 0; }
   if (e.boss === 'conflict') { e.reviveT = 0; e.twin = null; e.revive = null; }
   if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); }
@@ -1428,14 +1433,42 @@ function bossBehave(e, dt, ux, uy) {
     // the matchup keeps moving, so your language has to as well
     e.langT -= dt;
     if (e.langT <= 0) {
-      e.langT = 3.2;
+      e.langT = cad(e, 3.2);
       e.area = AREA_KEYS[(AREA_KEYS.indexOf(e.area) + 1) % AREA_KEYS.length];
       const L = LANGS.find((l) => l.area === e.area);
       addFloater(e.x, e.y - e.r - 8, 'REFACTORED → ' + L.name, AREAS[e.area].color);
       sfx.ding();
     }
     e.shedT -= dt;
-    if (e.shedT <= 0) { e.shedT = 4.5; shedDebt(e, 1); }
+    if (e.shedT <= 0) { e.shedT = cad(e, 4.5); shedDebt(e, (e.lap || 0) >= 1 ? 2 : 1); }
+    // Stack trace: it can't reach you at sp 9, so it throws the trace at you
+    // instead. Telegraphed by a glow and a pager tone a beat before it lands —
+    // the ring is dodged by moving, not by out-ranging it.
+    e.traceT -= dt;
+    if (e.traceT <= 0 && e.traceWind <= 0) {
+      e.traceWind = 0.8;
+      addFloater(e.x, e.y - e.r - 8, 'STACK TRACE', '#8fa8d8');
+      sfx.siren();
+    }
+    if (e.traceWind > 0) {
+      e.traceWind -= dt;
+      if (e.traceWind <= 0) {
+        e.traceT = cad(e, 5);
+        const off = rnd(0, TAU);
+        for (let k = 0; k < 9; k++) {
+          const a = off + TAU * k / 9;
+          throwHazard(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
+            Math.cos(a) * 55, Math.sin(a) * 55, 3);
+        }
+        shake += 3;
+      }
+    }
+    // it is glacial at full HP and genuinely fast once it is coming apart
+    e.sp = e.spBase * (1 + 1.2 * (1 - e.hp / e.maxHp));
+    if (e.hp < e.maxHp * 0.5 && !e.wakeHint) {
+      e.wakeHint = true;
+      addFloater(e.x, e.y - e.r - 16, "IT'S WAKING UP", '#ff8a5c', true);
+    }
     return false;
   }
   if (e.boss === 'screep') {
@@ -2491,6 +2524,15 @@ function drawBossTells(e, ex, ey, w, h) {
     ctx.strokeStyle = '#080c18';
     ctx.strokeRect(cx - 3.5, Math.round(e.y) - 3.5, 7, 7);
     if (!e.open) { ctx.strokeStyle = '#5a6a90'; ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5); }
+  }
+  if (e.boss === 'monolith' && e.traceWind > 0) {
+    // the trace it is winding up to throw: a ring growing out to where the
+    // glyphs will actually appear, so the dodge is decided before they exist
+    ctx.strokeStyle = Math.floor(t * 14) % 2 === 0 ? '#8fa8d8' : '#dfe6ff';
+    ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
+    ctx.globalAlpha = 0.45;
+    ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 4 + (0.8 - e.traceWind) * 34, 0, TAU); ctx.stroke();
+    ctx.globalAlpha = 1;
   }
   if (e.boss === 'flaky') {
     ctx.strokeStyle = e.pass ? '#3fe08a' : '#ff5a6e';
