@@ -1310,13 +1310,18 @@ function throwHazard(x, y, vx, vy, life, kind) {
 }
 
 // ---------------------------------------------------------------- bosses
+// Every boss timer is set through this rather than written flat, so a later
+// lap — and the soft enrage — can speed the whole fight up instead of just
+// fattening its HP bar. e.cad is the fight's cadence multiplier (see bossInit).
+const cad = (e, secs) => secs * (e.cad || 1);
+
 // Per-boss state, set after the HP scaling in spawnBoss so thresholds match.
 function bossInit(e) {
   if (e.boss === 'monolith') { e.langT = 3.2; e.shedT = 4.5; e.shedStep = Math.round(e.maxHp / 7); e.nextShed = e.maxHp - e.shedStep; }
   if (e.boss === 'screep') { e.growT = 3; e.grown = 0; }
   if (e.boss === 'conflict') { e.reviveT = 0; e.twin = null; e.revive = null; }
   if (e.boss === 'mtgboss') { e.cycleT = 3; e.open = false; e.callT = 4; }
-  if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; }
+  if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; }
   if (e.boss === 'flaky') { e.pass = true; e.phaseT = 1.7; }
 }
 
@@ -1361,6 +1366,12 @@ function spawnMinion(type, from, n) {
     m.spawnT = 0.45; // materializes with a flash — readable, not a cheap shot
   }
 }
+
+// How far it travels per second while charging, and how many charges it links
+// into one attack before it goes down. A second lap adds a third dash — the
+// same fight, with less of the room left safe.
+const DASH_SPEED = 430;
+const outageDashes = (e) => ((e.lap || 0) >= 1 ? 3 : 2);
 
 function shedDebt(e, n) {
   spawnMinion('bug', e, n);
@@ -1440,18 +1451,36 @@ function bossBehave(e, dt, ux, uy) {
     return false;
   }
   if (e.boss === 'outage') {
-    // aim (telegraph) → dash → down (the incident window: double damage)
+    // aim (telegraph) → dash → re-aim → dash → down (the incident window: ×2).
+    // One dash was a sidestep away from free; a chain of them re-reads where
+    // you actually are between each one, so the dodge has to keep being made.
     e.phaseT -= dt;
     if (e.mode === 'aim') {
-      if (e.phaseT <= 0) { e.mode = 'dash'; e.phaseT = 0.45; e.dx = ux; e.dy = uy; sfx.siren(); }
+      if (e.phaseT <= 0) {
+        e.mode = 'dash'; e.phaseT = 0.45;
+        e.dx = ux; e.dy = uy;   // aimed at where you are now, not where you were
+        e.trailT = 0;
+        sfx.siren();
+      }
       return true;
     }
     if (e.mode === 'dash') {
-      e.x += e.dx * 430 * dt; e.y += e.dy * 430 * dt;
-      if (e.phaseT <= 0) { e.mode = 'down'; e.phaseT = 1.6; shake += 3; }
+      e.x += e.dx * DASH_SPEED * dt; e.y += e.dy * DASH_SPEED * dt;
+      // burning ground: the route it took stays on fire behind it, so a long
+      // fight slowly costs you the room rather than only the moment
+      e.trailT -= dt;
+      if (e.trailT <= 0) { e.trailT = 24 / DASH_SPEED; throwHazard(e.x, e.y, 0, 0, 2.5, 'fire'); }
+      if (e.phaseT <= 0) {
+        e.dashesLeft--;
+        if (e.dashesLeft > 0) { e.mode = 'aim'; e.phaseT = cad(e, 0.25); } // barely time to move
+        else {
+          e.mode = 'down'; e.phaseT = cad(e, 1.1); shake += 3;
+          if (!e.windowHint) { e.windowHint = true; addFloater(e.x, e.y - e.r - 8, 'INCIDENT WINDOW — ×2', '#ffd23f'); }
+        }
+      }
       return true;
     }
-    if (e.phaseT <= 0) { e.mode = 'aim'; e.phaseT = 1.3; }
+    if (e.phaseT <= 0) { e.mode = 'aim'; e.phaseT = cad(e, 0.7); e.dashesLeft = outageDashes(e); }
     return true;
   }
   if (e.boss === 'flaky') {
