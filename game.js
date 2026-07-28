@@ -442,7 +442,10 @@ const LANGS = [
 ];
 
 const GLYPHS = Object.keys(FONT);
-const GLYPH_IMG = LANGS.map((L) => {
+// Every glyph as a 5×7 sprite in one color, outlined so it reads over any
+// floor tile. The player's letters use one set per language; the code a boss
+// throws back uses the same builder in its own colors — see HAZARD_IMG.
+function glyphSet(color) {
   const set = {};
   for (const ch of GLYPHS) {
     const c = cvOf(5, 7), g = c.getContext('2d');
@@ -451,11 +454,12 @@ const GLYPH_IMG = LANGS.map((L) => {
         if (FONT[ch][r][k] === '1') rf(g, ox + k, oy + r, 1, 1, col);
     };
     plot(0, 1, PAL.outline); plot(2, 1, PAL.outline); plot(1, 2, PAL.outline);
-    plot(1, 1, L.color);
+    plot(1, 1, color);
     set[ch] = c;
   }
   return set;
-});
+}
+const GLYPH_IMG = LANGS.map((L) => glyphSet(L.color));
 
 const canImg = sprite([
   '.gggg.',
@@ -961,6 +965,9 @@ let deadlineT = 0;
 let backlog = [];
 const BACKLOG_MAX = 24; // past this the oldest get written off — see sweepToBacklog
 let combo, comboT, hitFreeze, culprit;
+// Code a boss threw at you: {x,y,vx,vy,r,life,kind,ch,armT}. See throwHazard.
+let hazards = [];
+const HAZARD_CAP = 40; // readability and perf ceiling — past this the oldest drop
 // The boss fight in progress: its live parts (Merge Conflict has two), the
 // roster entry driving the name/colour, and the title card's fade timer.
 let bossParts = [], bossDef = null, bossMaxHp = 0, bossBanner = 0;
@@ -1153,7 +1160,7 @@ function startGame() {
     x: VW / 2, y: VH / 2, vx: 0, vy: 0, angle: 0, r: 7,
     hp: 3, maxHp: 3, fireCd: 0, invuln: 0, rapidT: 0, duckT: 0, // 3 coffee cups, no passive regen
   };
-  bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
+  bullets = []; enemies = []; particles = []; floaters = []; pickups = []; hazards = [];
   sprint = 1; phase = 'break'; breakTimer = 2.5;
   spawnQueue = []; spawnTimer = 0; spawnInterval = 1; meetingCd = 6;
   deadlineT = 0; backlog = [];
@@ -1284,6 +1291,22 @@ function makeEnemy(type, x, y) {
   };
   enemies.push(e);
   return e;
+}
+
+// ---------------------------------------------------------------- hazards
+// The one thing on the field that is not a ticket: code the codebase throws
+// back at you. Same glyphs you fire, in grey (thrown source) or orange
+// (burning ground). They hurt on contact, ignore your letters completely, and
+// fade out on their own — so the room itself becomes a threat instead of just
+// the boss standing in it. Inert for armT while they materialize, the same
+// rule every spawning ticket follows.
+const HAZARD_IMG = { code: glyphSet('#8f8fa8'), fire: glyphSet('#ff8a5c') };
+function throwHazard(x, y, vx, vy, life, kind) {
+  hazards.push({
+    x, y, vx, vy, r: 5, life, kind: kind || 'code',
+    ch: pick(GLYPHS), armT: 0.25,
+  });
+  if (hazards.length > HAZARD_CAP) hazards.shift();
 }
 
 // ---------------------------------------------------------------- bosses
@@ -1849,6 +1872,7 @@ function update(dt) {
       const bonus = Math.round((50 + sprint * 25) * (wasBoss ? 3 : 1) * (cleared ? 1 : 0.33) * assistMul());
       score += bonus;
       if (wasBoss) { bossDef = null; bossMaxHp = 0; }
+      hazards.length = 0; // thrown code doesn't outlive the sprint that threw it
       deadlineT = 0;
       if (cleared) {
         clearMsg = (wasBoss ? 'BOSS DOWN!  +' : 'SPRINT ' + sprint + ' CLEAR!  +') + bonus;
@@ -2060,6 +2084,23 @@ function update(dt) {
     }
   }
 
+  // --- hazards: thrown code. Bullets pass straight through it; the only
+  // answer is not being where it lands.
+  for (let i = hazards.length - 1; i >= 0; i--) {
+    const hz = hazards[i];
+    hz.x += hz.vx * dt; hz.y += hz.vy * dt;
+    hz.armT = Math.max(0, hz.armT - dt);
+    hz.life -= dt;
+    if (hz.life <= 0 || hz.x < -12 || hz.x > VW + 12 || hz.y < -12 || hz.y > VH + 12) {
+      hazards.splice(i, 1);
+      continue;
+    }
+    if (hz.armT <= 0 && Math.hypot(hz.x - p.x, hz.y - p.y) < hz.r + p.r) {
+      damagePlayer(hz);
+      if (state !== 'play') break;
+    }
+  }
+
   // --- pickups
   for (let i = pickups.length - 1; i >= 0; i--) {
     const pk = pickups[i];
@@ -2108,6 +2149,21 @@ function draw() {
     const bob = Math.sin(menuT * 4 + pk.phase) * 1.5;
     const img = pk.kind === 'coffee' ? coffeeImg : pk.kind === 'can' ? canImg : duckImg;
     ctx.drawImage(img, Math.round(pk.x - img.width / 2), Math.round(pk.y - img.height / 2 + bob));
+  }
+
+  // hazards: thrown code lying on the floor, fading as it decays. One still
+  // materializing pulses instead — the same tell a spawning ticket wears, and
+  // it cannot touch you until it stops.
+  for (const hz of hazards) {
+    ctx.globalAlpha = hz.armT > 0
+      ? 0.25 + 0.35 * Math.abs(Math.sin(hz.armT * 26))
+      : clamp(hz.life, 0, 1);
+    ctx.drawImage(HAZARD_IMG[hz.kind][hz.ch], Math.round(hz.x) - 2, Math.round(hz.y) - 3);
+    ctx.globalAlpha = 1;
+    if (hz === culprit && hitFreeze > 0) { // freeze frame: that's what got you
+      ctx.strokeStyle = Math.floor(hitFreeze * 16) % 2 === 0 ? '#ffffff' : '#ff5a6e';
+      ctx.strokeRect(Math.round(hz.x) - 4.5, Math.round(hz.y) - 5.5, 9, 11);
+    }
   }
 
   // approach trails: dotted threat vectors toward the chair
@@ -2655,7 +2711,7 @@ function jumpToSprint(n) {
   sprint = n;
   phase = 'break';
   breakTimer = 0.6;
-  bullets = []; enemies = []; particles = []; floaters = []; pickups = [];
+  bullets = []; enemies = []; particles = []; floaters = []; pickups = []; hazards = [];
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
   spawnQueue = []; spawnTimer = 0; meetingCd = 6;
   deadlineT = 0; backlog = [];
