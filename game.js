@@ -1383,9 +1383,14 @@ function reviveTwin(e) {
   const src = e.revive;
   e.reviveT = 0; e.revive = null;
   if (!src) return;
-  const t = makeEnemy('conflict',
-    clamp(e.x + rnd(-70, 70), 24, VW - 24),
-    clamp(e.y + rnd(-50, 50), 24, VH - 24));
+  // It walks back in from the wall it was closest to rather than popping up in
+  // your lap — the reopen has to be survivable, and now it's visible too.
+  const dl = e.x, dr = VW - e.x, du = e.y, dd = VH - e.y;
+  const near = Math.min(dl, dr, du, dd);
+  let rx = clamp(e.x, 24, VW - 24), ry = clamp(e.y, 24, VH - 24);
+  if (near === dl) rx = 24; else if (near === dr) rx = VW - 24;
+  else if (near === du) ry = 24; else ry = VH - 24;
+  const t = makeEnemy('conflict', rx, ry);
   t.maxHp = src.maxHp;
   t.hp = src.hp;
   t.score = src.score;
@@ -1434,7 +1439,20 @@ function bossBehave(e, dt, ux, uy) {
       e.reviveT -= dt;
       if (e.reviveT <= 0) reviveTwin(e);
     }
-    return false;
+    const tw = e.twin && enemies.includes(e.twin) ? e.twin : null;
+    if (!tw) return false; // last side standing: the ordinary seek is threat enough
+    // Pincer: each side steers for the point opposite its twin across you, so
+    // they arrive from both sides instead of queueing up in one blob. Backing
+    // straight off no longer keeps them both in front of you.
+    const tx = clamp(player.x + (player.x - tw.x) * 0.5, e.r, VW - e.r);
+    const ty = clamp(player.y + (player.y - tw.y) * 0.5, e.r, VH - e.r);
+    const gx = tx - e.x, gy = ty - e.y;
+    const gd = Math.hypot(gx, gy);
+    if (gd > 0.5) {
+      const step = Math.min(gd, e.sp * dt);
+      e.x += gx / gd * step; e.y += gy / gd * step;
+    }
+    return true;
   }
   if (e.boss === 'mtgboss') {
     // letters bounce off the agenda; they land only while someone derails it
@@ -1495,6 +1513,14 @@ function bossBehave(e, dt, ux, uy) {
   }
   return false;
 }
+
+// Twins sitting on top of each other are rebasing onto one another and take
+// half damage until you split them up. Together with the pincer steering it
+// makes Merge Conflict a positioning fight: they want to converge on you, and
+// letting them is what makes them tanky.
+const REBASE_DIST = 90;
+const rebasing = (e) => e.boss === 'conflict' && e.twin && enemies.includes(e.twin) &&
+  Math.hypot(e.x - e.twin.x, e.y - e.twin.y) < REBASE_DIST;
 
 // Letters a boss currently ignores. Both cases are telegraphed on screen.
 function bossBlocks(e) {
@@ -2096,6 +2122,10 @@ function update(dt) {
         }
         if (e.boss === 'outage' && e.mode === 'down') dmg *= 2; // the incident window
         if (e.boss === 'conflict' && e.reviveT > 0) dmg *= 2;   // one side already resolved
+        if (rebasing(e)) {                                      // the two sides are covering each other
+          dmg *= 0.5;
+          if (!e.rebaseHint) { e.rebaseHint = true; addFloater(e.x, e.y - e.r - 8, 'REBASING — SPLIT THEM UP', '#ffd23f'); }
+        }
         e.hp -= dmg;
         if (!e.boss) { // bosses are too heavy to shove around
           e.x += Math.cos(player.angle) * 1.5; // knockback nudge
@@ -2431,7 +2461,9 @@ function drawBossTells(e, ex, ey, w, h) {
   }
   if (e.boss === 'conflict') {
     if (e.twin && enemies.includes(e.twin)) {
-      ctx.strokeStyle = 'rgba(63,224,138,0.35)';
+      // the link lights up while they're close enough to cover each other —
+      // that's the half-damage state, drawn before the HP bar stalls
+      ctx.strokeStyle = rebasing(e) ? 'rgba(255,210,63,0.75)' : 'rgba(63,224,138,0.35)';
       ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.twin.x, e.twin.y); ctx.stroke();
     }
     if (e.reviveT > 0) { // the window to finish the other side, at double damage
