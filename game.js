@@ -1449,6 +1449,15 @@ function reviveTwin(e) {
   shake += 5;
 }
 
+// How far The Flaky Test will back off while you can actually hit it. The
+// retreat has to be a kite, not an exit. Uncapped, the flee and the hunt
+// cancel out exactly — it settles into an orbit between 40 and 110px and a
+// player who stands still is never reached at all, which is the opposite of
+// the point. So the ceiling sits inside one FAIL window's worth of travel
+// (1.2s at 1.3x speed ≈ 70px): every time it goes immune it can close the
+// whole gap, and the immune window becomes something you dodge.
+const FLAKY_KEEP = 70;
+
 // Returns true when the boss moved itself this frame (skipping the generic seek).
 function bossBehave(e, dt, ux, uy) {
   if (e.boss === 'monolith') {
@@ -1633,7 +1642,10 @@ function bossBehave(e, dt, ux, uy) {
     // Inverted pursuit: it flees while it's hittable and hunts you while it
     // isn't, so the damage window is a chase and the immune window is a dodge.
     // Spraying through FAIL was free before; now it costs ground as well as HP.
-    const sp = e.sp * (e.pass ? -0.8 : 1.3);
+    // The flee stops at FLAKY_KEEP and turns into a slow walk back in, so each
+    // immune window can actually close the gap instead of it hovering forever.
+    const far = Math.hypot(player.x - e.x, player.y - e.y) > FLAKY_KEEP;
+    const sp = e.sp * (e.pass ? (far ? 0.25 : -0.8) : 1.3);
     const wob = Math.sin(t * e.wobFreq + e.wobPhase) * e.wobAmp;
     e.x += (ux + -uy * wob) * sp * dt;
     e.y += (uy + ux * wob) * sp * dt;
