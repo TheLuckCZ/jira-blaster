@@ -1323,7 +1323,7 @@ function bossInit(e) {
     e.traceT = cad(e, 5); e.traceWind = 0;
     e.spBase = e.sp; // rage scales off this — see the monolith branch in bossBehave
   }
-  if (e.boss === 'screep') { e.growT = 3; e.grown = 0; }
+  if (e.boss === 'screep') { e.growT = cad(e, 3); e.grown = 0; e.growCap = (e.lap || 0) >= 1 ? 8 : 6; e.lastHitT = 9; }
   if (e.boss === 'conflict') { e.reviveT = 0; e.twin = null; e.revive = null; }
   if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); }
   if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; }
@@ -1361,15 +1361,19 @@ function spawnBoss(n) {
 }
 
 // Minions a boss calls in. They are ordinary tickets, so the sprint is not
-// clear until they are gone too.
+// clear until they are gone too. Returns them, for the callers that want to
+// send them in with a twist of their own.
 function spawnMinion(type, from, n) {
+  const made = [];
   for (let k = 0; k < n; k++) {
     const a = rnd(0, TAU);
     const m = makeEnemy(type,
       clamp(from.x + Math.cos(a) * (from.r + 12), 12, VW - 12),
       clamp(from.y + Math.sin(a) * (from.r + 12), 12, VH - 12));
     m.spawnT = 0.45; // materializes with a flash — readable, not a cheap shot
+    made.push(m);
   }
+  return made;
 }
 
 // How far it travels per second while charging, and how many charges it links
@@ -1382,6 +1386,11 @@ function shedDebt(e, n) {
   spawnMinion('bug', e, n);
   addFloater(e.x, e.y - e.r - 6, 'TECH DEBT!', '#8fa8d8');
 }
+
+// How long Scope Creep has to go unhit before its growth clock starts moving
+// again. Long enough to switch language or clear one story, short enough that
+// it punishes actually leaving it alone.
+const CREEP_GRACE = 1.2;
 
 // How close you have to be for The Endless Meeting to consider you an
 // attendee, how hard it drags you in, and how close a resolved attendee has
@@ -1472,14 +1481,26 @@ function bossBehave(e, dt, ux, uy) {
     return false;
   }
   if (e.boss === 'screep') {
-    e.growT -= dt;
-    if (e.growT <= 0 && e.grown < 6) {
-      e.growT = 3;
+    // Scope only creeps while nobody is pushing back. The growth clock stops
+    // under sustained fire and starts again 1.2s after you turn away, so the
+    // choice between burning the boss and clearing the stories it buds off is
+    // finally a real one — the deadline is the one you set.
+    e.lastHitT += dt;
+    if (e.lastHitT > CREEP_GRACE) e.growT -= dt;
+    if (e.growT <= 0 && e.grown < e.growCap) {
+      e.growT = cad(e, 3);
       e.grown++;
       e.scale += 0.22; e.r += 2; e.sp += 3;
       e.maxHp += 10; e.hp += 10;
       addFloater(e.x, e.y - e.r - 6, CREEP[(e.grown - 1) % CREEP.length], '#ff8fa0');
-      spawnMinion('story', e, 1);
+      // the requirements doc, thrown at your head
+      const a = Math.atan2(player.y - e.y, player.x - e.x);
+      for (const spread of [-0.14, 0.14]) {
+        throwHazard(e.x + Math.cos(a + spread) * e.r, e.y + Math.sin(a + spread) * e.r,
+          Math.cos(a + spread) * 90, Math.sin(a + spread) * 90, 2);
+      }
+      // what it buds off spreads sideways rather than walking straight in
+      for (const m of spawnMinion('story', e, 1)) m.flank = Math.random() < 0.5 ? 1 : -1;
       shake += 2;
     }
     return false;
@@ -2207,6 +2228,7 @@ function update(dt) {
           if (!e.rebaseHint) { e.rebaseHint = true; addFloater(e.x, e.y - e.r - 8, 'REBASING — SPLIT THEM UP', '#ffd23f'); }
         }
         e.hp -= dmg;
+        if (e.boss === 'screep') e.lastHitT = 0; // pushing back freezes the scope
         if (!e.boss) { // bosses are too heavy to shove around
           e.x += Math.cos(player.angle) * 1.5; // knockback nudge
           e.y += Math.sin(player.angle) * 1.5;
@@ -2524,6 +2546,15 @@ function drawBossTells(e, ex, ey, w, h) {
     ctx.strokeStyle = '#080c18';
     ctx.strokeRect(cx - 3.5, Math.round(e.y) - 3.5, 7, 7);
     if (!e.open) { ctx.strokeStyle = '#5a6a90'; ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5); }
+  }
+  if (e.boss === 'screep' && e.grown < e.growCap) {
+    // the growth clock, on the card: green while your fire is holding it, red
+    // and draining while it isn't. It's the only thing you control here.
+    const held = e.lastHitT <= CREEP_GRACE;
+    ctx.fillStyle = '#080c18';
+    ctx.fillRect(e.x - 8, ey - 5, 16, 2);
+    ctx.fillStyle = held ? '#3fe08a' : '#ff5a6e';
+    ctx.fillRect(e.x - 8, ey - 5, held ? 16 : Math.round(16 * clamp(e.growT / cad(e, 3), 0, 1)), 2);
   }
   if (e.boss === 'monolith' && e.traceWind > 0) {
     // the trace it is winding up to throw: a ring growing out to where the
