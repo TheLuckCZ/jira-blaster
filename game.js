@@ -971,6 +971,10 @@ const HAZARD_CAP = 40; // readability and perf ceiling — past this the oldest 
 // The boss fight in progress: its live parts (Merge Conflict has two), the
 // roster entry driving the name/colour, and the title card's fade timer.
 let bossParts = [], bossDef = null, bossMaxHp = 0, bossBanner = 0;
+// Boss sprints have no standup clock, so a patient player could kite one for
+// as long as they liked. This is the answer: not a fail state, just pressure.
+let bossClock = 0, bossEnraged = false;
+const BOSS_ENRAGE_AT = 75; // seconds of one fight before it stops being polite
 let score = 0, kills = 0, clearMsg = '';
 let high = 0;
 try { high = parseInt(localStorage.getItem('jiraBlasterHigh') || '0', 10) || 0; } catch (e) { /* private mode */ }
@@ -1166,6 +1170,7 @@ function startGame() {
   deadlineT = 0; backlog = [];
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
+  bossClock = 0; bossEnraged = false;
 }
 
 // ---------------------------------------------------------------- sprints
@@ -1316,7 +1321,11 @@ function throwHazard(x, y, vx, vy, life, kind) {
 const cad = (e, secs) => secs * (e.cad || 1);
 
 // Per-boss state, set after the HP scaling in spawnBoss so thresholds match.
+// Lap and enrage land first, because every timer below is set through cad().
 function bossInit(e) {
+  e.cad = Math.pow(0.88, e.lap || 0);   // each lap runs the whole fight quicker
+  e.sp *= 1 + 0.08 * (e.lap || 0);
+  if (bossEnraged) { e.cad *= 0.5; e.sp *= 1.3; } // a part that arrives mid-enrage
   if (e.boss === 'monolith') {
     e.langT = cad(e, 3.2); e.shedT = cad(e, 4.5);
     e.shedStep = Math.round(e.maxHp / 7); e.nextShed = e.maxHp - e.shedStep;
@@ -1333,16 +1342,19 @@ function bossInit(e) {
 function spawnBoss(n) {
   const step = Math.floor(n / 4) - 1;
   const def = BOSSES[step % BOSSES.length];
-  const mul = 1 + 0.55 * Math.floor(step / BOSSES.length); // each full lap is meaner
+  const lap = Math.floor(step / BOSSES.length);
+  const mul = 1 + 0.55 * lap; // each full lap is meaner
   bossDef = def;
   bossParts = [];
   bossBanner = 2.8;
+  bossClock = 0; bossEnraged = false;
 
   const make = (x, y) => {
     const e = makeEnemy(def.type, x, y);
     e.hp = e.maxHp = Math.round(ENEMY_TYPES[def.type].hp * mul);
     e.score = Math.round(ENEMY_TYPES[def.type].score * mul);
     e.area = def.area;
+    e.lap = lap;      // read by bossInit and by the per-boss lap tweaks
     e.spawnT = 1.4;   // long materialize — the title card plays over it
     bossInit(e);
     bossParts.push(e);
@@ -1426,6 +1438,7 @@ function reviveTwin(e) {
   t.hp = src.hp;
   t.score = src.score;
   t.area = src.area;
+  t.lap = e.lap;    // the reopened side belongs to the same lap as the fight
   t.spawnT = 0.5;
   bossInit(t);
   t.reopens = src.reopens; // so the next reopen is weaker again
@@ -1678,6 +1691,10 @@ function killBoss(e, gained) {
     pickups.push({ kind: 'coffee', x: clamp(e.x - 16, 12, VW - 12), y: e.y, life: 16, phase: rnd(0, TAU) });
     pickups.push({ kind: 'duck', x: clamp(e.x + 16, 12, VW - 12), y: e.y, life: 16, phase: rnd(0, TAU) });
     pickups.push({ kind: 'can', x: clamp(e.x, 12, VW - 12), y: clamp(e.y + 18, 12, VH - 12), life: 16, phase: rnd(0, TAU) });
+    // a later lap is a harder fight, so it pours a second cup
+    if ((e.lap || 0) >= 1) {
+      pickups.push({ kind: 'coffee', x: clamp(e.x, 12, VW - 12), y: clamp(e.y - 18, 12, VH - 12), life: 16, phase: rnd(0, TAU) });
+    }
   } else {
     addFloater(e.x, e.y, 'ONE SIDE DOWN! +' + gained, '#ffd23f');
     sfx.epicDie();
@@ -2072,6 +2089,22 @@ function update(dt) {
         addFloater(p.x, p.y - 24, 'PROMOTION! +1 MAX CUP', '#ffd23f');
         sfx.pickup();
       }
+    }
+  }
+
+  // --- soft enrage: the sprint review is not going to move for you
+  if (bossParts.length) {
+    bossClock += dt;
+    if (bossClock > BOSS_ENRAGE_AT && !bossEnraged) {
+      bossEnraged = true;
+      for (const b of bossParts) {
+        b.sp *= 1.3;
+        if (b.spBase) b.spBase *= 1.3; // the Monolith recomputes sp from this
+        b.cad *= 0.5;                  // and every cadence timer from here halves
+      }
+      addFloater(p.x, p.y - 20, 'THE SPRINT REVIEW IS WAITING', '#ff5a6e', true);
+      sfx.siren();
+      shake += 6;
     }
   }
 
@@ -2639,8 +2672,8 @@ function drawBossBar() {
   const w = 250, x = Math.round((VW - w) / 2), y = 25;
   ctx.textAlign = 'center';
   ctx.font = 'bold 8px monospace';
-  ctx.fillStyle = bossDef.color;
-  ctx.fillText(bossDef.name, VW / 2, y - 3);
+  ctx.fillStyle = bossEnraged && Math.floor(t * 4) % 2 === 0 ? '#ff5a6e' : bossDef.color;
+  ctx.fillText(bossDef.name + (bossEnraged ? ' — OVERRUNNING' : ''), VW / 2, y - 3);
   ctx.fillStyle = '#2a2140';
   ctx.fillRect(x, y, w, 5);
   ctx.fillStyle = bossDef.color;
@@ -2931,6 +2964,7 @@ function jumpToSprint(n) {
   breakTimer = 0.6;
   bullets = []; enemies = []; particles = []; floaters = []; pickups = []; hazards = [];
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
+  bossClock = 0; bossEnraged = false;
   spawnQueue = []; spawnTimer = 0; meetingCd = 6;
   deadlineT = 0; backlog = [];
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
