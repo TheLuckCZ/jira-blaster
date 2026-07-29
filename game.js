@@ -13,17 +13,89 @@
 // and widens the arena — world speeds below are sized to match it.
 const VW = 640, VH = 360;
 const canvas = document.getElementById('game');
-canvas.width = VW; canvas.height = VH;
-const ctx = canvas.getContext('2d');
-ctx.imageSmoothingEnabled = false;
 
+// ---------------------------------------------------------------- render scale
+// The world is always laid out in 640×360 game units — every position, size and
+// font in this file is in those units and none of them change here. What this
+// dial changes is how many real pixels each unit is rasterized into.
+//
+//   BIG   (1×) backbuffer 640×360   — the original chunky look
+//   SMALL (2×) backbuffer 1280×720  — same layout, twice the rasterization
+//
+// It is NOT the VW/VH size dial: raising that would widen the arena and change
+// the game. This keeps the arena identical and only sharpens how it is drawn.
+//
+// The big win is text: an 8px font rasterized into 16 real pixels has genuine
+// extra detail, where the same glyph blown up 2× afterwards has none — which is
+// why the HUD was hard to read. Tickets sharpen too, because they are drawn
+// ROTATED by their wobble, and a rotation resolved at 2× has half-size
+// stair-steps along every edge. The art's own pixel grid is unchanged, so it
+// still reads as pixel art — it just stops looking smeared at the corners.
+let hiRes = false;
+try { hiRes = localStorage.getItem('jiraBlasterHiRes') === '1'; } catch (e) { /* private mode */ }
+const RS = () => (hiRes ? 2 : 1);
+
+const ctx = canvas.getContext('2d');
+function applyRes() {
+  // assigning width/height wipes all context state, so anything sticky has to
+  // be re-set right after — imageSmoothingEnabled is the one that matters, and
+  // losing it silently turns every sprite into a blurry mess
+  canvas.width = VW * RS();
+  canvas.height = VH * RS();
+  ctx.imageSmoothingEnabled = false;
+  resize();
+}
+function setHiRes(v) {
+  hiRes = v;
+  try { localStorage.setItem('jiraBlasterHiRes', hiRes ? '1' : '0'); } catch (e) { /* private mode */ }
+  applyRes();
+}
+
+// The backbuffer is always 640×360 — there is only ever one resolution in this
+// game, and every sprite is generated in code — so filling the window is purely
+// a question of how the canvas is stretched by CSS.
+//
+// This used to floor to a whole multiple, which kept every game pixel exactly
+// square but left bars on any window that wasn't a 16:9 multiple, and (per
+// docs/MOBILE-PORT.md) overflowed a phone because it also clamped to a minimum
+// of 1×. Scaling fractionally fills the largest 16:9 box the window can hold,
+// in both directions. The trade is that at, say, 3.4× some source rows land on
+// 3 device pixels and some on 4, so the art shimmers very slightly in motion —
+// `image-rendering: pixelated` keeps it crisp-but-uneven rather than blurry,
+// which is the right way round for pixel art.
+//
+// The aspect ratio is deliberately preserved: stretching to 100%×100% would
+// turn every disc — the chair, the graze ring, the meeting's invite radius —
+// into an ellipse.
 function resize() {
-  const s = Math.max(1, Math.floor(Math.min(innerWidth / VW, innerHeight / VH)));
+  const s = Math.max(0.1, Math.min(innerWidth / VW, innerHeight / VH));
   canvas.style.width = VW * s + 'px';
   canvas.style.height = VH * s + 'px';
 }
 addEventListener('resize', resize);
-resize();
+applyRes();   // sizes the backbuffer for the saved mode, then lays it out
+
+// Real fullscreen, independent of the scaling above: whatever the window
+// becomes, resize() fills it. The documentElement goes fullscreen rather than
+// the canvas so the page's backdrop still shows in the letterbox margin
+// instead of a flat black bar.
+const fsOn = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+function toggleFullscreen() {
+  try {
+    if (fsOn()) {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+    } else {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      // rejects unless it came from a real gesture — the next click can retry
+      if (req) Promise.resolve(req.call(el)).catch(() => {});
+    }
+  } catch (e) { /* unsupported — the button just does nothing */ }
+}
+// the resize event usually follows on its own, but not on every browser
+addEventListener('fullscreenchange', resize);
+addEventListener('webkitfullscreenchange', resize);
 
 // ---------------------------------------------------------------- helpers
 const TAU = Math.PI * 2;
@@ -122,7 +194,7 @@ function shade(hex, f) {
 // Drawn facing up/north — the game rotates it by angle + π/2. Every material
 // color comes from `look`; PAL keeps only the outline and the teal rim light,
 // which belong to the art direction rather than to the person.
-function buildDevImg(o) {
+function buildDevImg(o, scr) {
   const c = cvOf(34, 34), g = c.getContext('2d'), cx = 17, cy = 18;
   const skin = SKINS[o.skin];
   const hair = HAIRC[o.hairC], hairHi = shade(hair, 1.3), style = HAIRS[o.hairS];
@@ -153,14 +225,31 @@ function buildDevImg(o) {
   rf(g, cx - 7, cy - 17, 14, 6, PAL.outline);
   rf(g, cx - 6, cy - 16, 12, 3, lap);
   rf(g, cx - 6, cy - 13, 12, 2, lapHi);
-  rf(g, cx - 5, cy - 15, 10, 2, PAL.screen);
+  // The laptop display shows what you are about to fire. It is the only part of
+  // the sprite that isn't the dev's own choice of colours, and it means the
+  // equipped language is readable from the chair itself — you never have to
+  // look away to the HUD to check what a letter will do to a stripe.
+  rf(g, cx - 5, cy - 15, 10, 2, scr || PAL.screen);
   disc(g, cx, cy, 11, PAL.rim, (dx, dy) => dy < -2 && dx * dx + dy * dy >= 108);
   return c;
 }
-let devImg = buildDevImg(look);
+// The sprite is baked once and reused, so it has to be rebuilt when either
+// input to it changes: the dev's look, or the equipped language now that the
+// laptop shows it. Invalidating lazily on read rather than hooking every
+// assignment to `lang` — the autotest and the auto-aim assist both set it
+// directly, and a hook would have to catch every one of them.
+let devImg = buildDevImg(look), devImgLang = -1;
+
+function devSprite() {
+  if (devImgLang !== lang) {
+    devImg = buildDevImg(look, LANGS[lang].color);
+    devImgLang = lang;
+  }
+  return devImg;
+}
 
 function applyLook() {
-  devImg = buildDevImg(look);
+  devImgLang = -1;   // force a rebuild on next draw, in the current language
   try { localStorage.setItem('jiraBlasterLook', JSON.stringify(look)); } catch (e) { /* private mode */ }
 }
 function setLook(key, v) { look[key] = v; applyLook(); }
@@ -437,8 +526,8 @@ const AREAS = {
 const AREA_KEYS = Object.keys(AREAS);
 const LANGS = [
   { name: 'HTML', area: 'fe',    color: AREAS.fe.color },
-  { name: 'NODE', area: 'be',    color: AREAS.be.color },
-  { name: 'GO',   area: 'infra', color: AREAS.infra.color },
+  { name: 'JAVA', area: 'be',    color: AREAS.be.color },
+  { name: 'BASH', area: 'infra', color: AREAS.infra.color },
 ];
 
 const GLYPHS = Object.keys(FONT);
@@ -664,6 +753,7 @@ function initAudio() {
 
   noiseBuf = renderNoise(1, 0, 1);
   if (actx.state === 'suspended') actx.resume().catch(() => {});
+  loadSamples(); // async; until they land, every voice plays its synth version
 }
 
 // decay 0 → flat white noise (the reusable source); >0 → a decaying tail (the
@@ -851,6 +941,78 @@ const VOICES = {
 // frames would otherwise stack voices faster than the ear can separate them.
 const SFX_GAP = { shoot: 0.045, hit: 0.04, crit: 0.04, block: 0.05, graze: 0.06, kill: 0.05, ding: 0.07 };
 const lastPlayed = {};
+// ---------------------------------------------------------------- samples
+// Retro one-shots from Juhani Junkala's "Essential Retro Video Game Sound
+// Effects Collection" (CC0), picked per event and layered OVER the synth: a
+// voice listed here plays its sample, everything else stays synthesised, and
+// if the files fail to load — offline, blocked, a bad deploy — every voice
+// falls back to the synth and the game sounds exactly as it did before.
+//
+// The five voices deliberately NOT sampled are the ones whose synth versions
+// carry the office joke the pack can't tell: `bossIn` (a dial-up handshake),
+// `over` (a machine powering down), `quack` (a rubber duck), `graze` (a
+// filtered noise sweep past your ear), and `block` — the two detuned squares
+// beating against each other that say ACCESS DENIED when your letters bounce
+// off a meeting invite or an immune boss. Add a name here to sample it too.
+//
+// WAV, not MP3: `shoot` fires up to 22×/second, and MP3 encoder delay prepends
+// silence that decodeAudioData does not reliably strip. 22.05 kHz mono keeps
+// the whole set at ~124 KB.
+// Gains are NOT taste — each was measured. The sources are all ~-6 dB, which
+// put every one of them a tier or two too loud (`crit` landed at 0.34, level
+// with a boss dying). Each buffer's true peak was read back at the context
+// sample rate and the gain solved so the sound lands in the tier its synth
+// counterpart occupies — the same three tiers VOICES documents above:
+// constant ~0.12, punctuation ~0.20, once-a-sprint drama ~0.34.
+// Re-measure if you swap a source; the pack's files are not level with each other.
+const SAMPLES = {
+  shoot:    0.20,   // single shot — the shortest in the pack, so rapid fire stays clean
+  hit:      0.22,
+  crit:     0.26,   // sits just above `hit`, so a matched letter reads as better
+  kill:     0.40,   // a coin: the ticket moved to Done
+  ding:     0.35,   // new ticket assigned
+  pickup:   0.40,
+  hurt:     0.35,
+  siren:    0.41,
+  epicDie:  0.63,
+  wave:     0.60,   // fanfare: the sprint starts
+  bossDown: 0.83,
+};
+const sampleBuf = {};
+let samplesAsked = false;
+
+// Resolved against game.js's own URL, not the page's. The game ships as a git
+// submodule inside the apex site at /game/jira-blaster/, and is also loaded by
+// a probe harness from another directory — a page-relative 'sounds/…' silently
+// 404s in both cases and drops the whole layer back to the synth, which looks
+// exactly like "the samples didn't work" and is miserable to diagnose.
+// Read at parse time: document.currentScript is null once handlers run.
+const ASSET_BASE = (() => {
+  const s = document.currentScript && document.currentScript.src;
+  return s ? s.replace(/[^/]*$/, '') : '';
+})();
+
+function loadSamples() {
+  if (samplesAsked || !actx) return;
+  samplesAsked = true;
+  for (const name of Object.keys(SAMPLES)) {
+    fetch(ASSET_BASE + 'sounds/' + name + '.wav')
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+      .then((b) => actx.decodeAudioData(b))
+      .then((buf) => { sampleBuf[name] = buf; })
+      .catch(() => { /* stays on the synth voice — nothing to report */ });
+  }
+}
+
+function playSample(buf, gain) {
+  const src = actx.createBufferSource();
+  src.buffer = buf;
+  const g = actx.createGain();
+  g.gain.value = gain;
+  route(src, g, 0.12);   // a touch of the same room the synth voices sit in
+  src.start();
+}
+
 const sfx = {};
 for (const name of Object.keys(VOICES)) {
   sfx[name] = () => {
@@ -858,7 +1020,9 @@ for (const name of Object.keys(VOICES)) {
     const gap = SFX_GAP[name];
     if (gap && lastPlayed[name] > actx.currentTime - gap) return;
     lastPlayed[name] = actx.currentTime;
-    VOICES[name]();
+    const buf = sampleBuf[name];
+    if (buf) playSample(buf, SAMPLES[name]);
+    else VOICES[name]();
   };
 }
 
@@ -880,14 +1044,31 @@ addEventListener('keydown', (e) => {
   // The setup screen owns the keyboard — every printable key is text there, so
   // none of the shortcuts below (M, I, O, 1-3, P, R) may fire while typing.
   if (state === 'setup') { setupKey(e); return; }
+  // above the per-screen handlers so F works everywhere except the name field,
+  // which is the one place a printable key has to stay text
+  if (k === 'f') { toggleFullscreen(); return; }
+  if (k === 'g') { setHiRes(!hiRes); return; }   // pixel size: BIG / SMALL
+  if (state === 'diff') { diffKey(e); return; }
+  if (state === 'help') { helpKey(e); return; }
+  // H is the help page from anywhere it can't be mistaken for typing
+  if (k === 'h' && (state === 'menu' || (state === 'play' && paused))) {
+    openHelp(state === 'menu' ? 'menu' : 'play');
+    return;
+  }
   if (k === 'm') setMuted(!muted);
   if (k === 'i' && state === 'play') {
-    autoAim = !autoAim;
-    addFloater(player.x, player.y - 16, 'AUTO-AIM ' + (autoAim ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
+    if (!curDiff().assists) { addFloater(player.x, player.y - 16, 'NO ASSISTS ON ' + curDiff().name, '#8f8fa8'); }
+    else {
+      autoAim = !autoAim;
+      addFloater(player.x, player.y - 16, 'AUTO-AIM ' + (autoAim ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
+    }
   }
   if (k === 'o' && state === 'play') {
-    autoShoot = !autoShoot;
-    addFloater(player.x, player.y - 16, 'AUTO-SHOOT ' + (autoShoot ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
+    if (!curDiff().assists) { addFloater(player.x, player.y - 16, 'NO ASSISTS ON ' + curDiff().name, '#8f8fa8'); }
+    else {
+      autoShoot = !autoShoot;
+      addFloater(player.x, player.y - 16, 'AUTO-SHOOT ' + (autoShoot ? 'ON (SP ×0.6)' : 'OFF'), '#2fe4c8');
+    }
   }
   if ((k === '1' || k === '2' || k === '3') && state === 'play') {
     lang = +k - 1;
@@ -897,7 +1078,10 @@ addEventListener('keydown', (e) => {
     if (state === 'play') { paused = !paused; if (paused) loadBoard(); }
   }
   if (k === 'c' && state === 'play' && paused) openSetup('play');
+  if (k === 'q' && state === 'play' && paused) quitRun();
   if (k === 'r' && state === 'over') startGame();
+  if (k === 'd' && state === 'over') openDiff();      // straight to a different sprint
+  if (k === 'escape' && state === 'over') state = 'menu';
   if (state === 'menu' && k === ' ') openSetup();
 });
 addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
@@ -927,7 +1111,26 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     return;
   }
-  if (state === 'over') { if (overTimer > 0.8) startGame(); return; }
+  if (state === 'diff') {
+    // same guard as setup: the tap that opened this screen must not land on a row
+    if (menuT - diffShownAt < 0.4) return;
+    const q = canvasPos(e);
+    for (const h of diffHits) if (inRect(q, h)) { h.act(); return; }
+    return;
+  }
+  if (state === 'help') {
+    if (menuT - helpShownAt < 0.4) return;
+    const q = canvasPos(e);
+    for (const h of helpHits) if (inRect(q, h)) { h.act(); return; }
+    return;
+  }
+  if (state === 'over') {
+    // the buttons win over the tap-anywhere-to-restart shortcut
+    const q = canvasPos(e);
+    for (const h of overHits) if (inRect(q, h)) { h.act(); return; }
+    if (overTimer > 0.8) startGame();
+    return;
+  }
   if (state === 'play' && paused) {
     const q = canvasPos(e);
     for (const h of pauseHits) if (inRect(q, h)) { h.act(); return; }  // edit your dev
@@ -940,7 +1143,7 @@ addEventListener('pointerup', () => { mouse.down = false; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // ---------------------------------------------------------------- state
-let state = 'menu'; // 'menu' | 'setup' | 'play' | 'over'
+let state = 'menu'; // 'menu' | 'setup' | 'diff' | 'play' | 'over'
 let paused = false;
 let autoAim = false, autoShoot = false; // assist toggles (I / O) — persist across runs
 // Debug: flipped by the title-screen slider. When on, pausing shows a level
@@ -949,7 +1152,11 @@ let debugMode = false;
 const DEBUG_MAX_SPRINT = 34;
 const menuHits = [];   // title-screen click targets (the debug slider), rebuilt each frame
 const debugHits = [];  // debug pause-overlay click targets (the level list), rebuilt each frame
-let lang = 0; // equipped language (keys 1/2/3) — persists across runs
+// Equipped language (keys 1/2/3), persists across runs. Starts on BASH: the
+// laptop screen on the chair shows this colour, and the chair is on screen from
+// the title onward — a cold start should not sit there glowing alarm-red before
+// the player has picked anything.
+let lang = 2;
 let t = 0;              // in-game time
 let menuT = 0;          // menu animation clock
 let overTimer = 0;      // time since game over
@@ -970,6 +1177,15 @@ let combo, comboT, hitFreeze, culprit;
 // Code a boss threw at you: {x,y,vx,vy,r,life,kind,ch,armT}. See throwHazard.
 let hazards = [];
 const HAZARD_CAP = 40; // readability and perf ceiling — past this the oldest drop
+// Thickness of the area stripe — the tell for which language kills a ticket.
+// At 2px it was a hairline you had to already know to look for; the colour is a
+// decision you make every second, so it gets real estate. It runs across the
+// TOP of the card like a document header, which covers the 2px type-colour band
+// baked into the sprite: type still reads from the card's size, its pips along
+// the bottom, and the hotfix's flashing border.
+// 3, not 4: a Bug's card is only 10px tall, and at 4 the header ate 40% of it
+// and stopped reading as a header at all.
+const STRIPE_W = 3;
 // The boss fight in progress: its live parts (Merge Conflict has two), the
 // roster entry driving the name/colour, and the title card's fade timer.
 let bossParts = [], bossDef = null, bossMaxHp = 0, bossBanner = 0;
@@ -1034,14 +1250,87 @@ const ENEMY_TYPES = {
 // Every 4th sprint is a boss instead of a Sprint Planning burst: one named
 // nightmare from the dev world, alone on screen — no edge burst, no meetings.
 // The roster cycles, and each full lap makes them tougher.
+// `short` is the name on the difficulty screen's unlock chips, where the full
+// title doesn't fit six across.
 const BOSSES = [
-  { type: 'monolith', area: 'infra', color: '#8fa8d8', name: 'THE LEGACY MONOLITH', tag: 'opened 2009 · nobody knows what it does' },
-  { type: 'screep',   area: 'fe',    color: '#ff5a6e', name: 'SCOPE CREEP',         tag: 'just one more little thing…' },
-  { type: 'conflict', area: 'be',    color: '#3fe08a', name: 'MERGE CONFLICT',      tag: 'resolve both sides — together' },
-  { type: 'mtgboss',  area: null,    color: '#b9c4dd', name: 'THE ENDLESS MEETING', tag: 'this could have been an email' },
-  { type: 'outage',   area: 'infra', color: '#ff8a5c', name: 'P0 MEGAOUTAGE',       tag: 'prod is down. everyone is watching.' },
-  { type: 'flaky',    area: 'be',    color: '#c9a8ff', name: 'THE FLAKY TEST',      tag: 'passes locally. sometimes.' },
+  { type: 'monolith', area: 'infra', color: '#8fa8d8', name: 'THE LEGACY MONOLITH', short: 'MONOLITH', tag: 'opened 2009 · nobody knows what it does' },
+  { type: 'screep',   area: 'fe',    color: '#ff5a6e', name: 'SCOPE CREEP',         short: 'CREEP',    tag: 'just one more little thing…' },
+  { type: 'conflict', area: 'be',    color: '#3fe08a', name: 'MERGE CONFLICT',      short: 'CONFLICT', tag: 'resolve both sides — together' },
+  // the meeting's area is a starting point only — it rotates during the fight
+  { type: 'mtgboss',  area: 'be',    color: '#b9c4dd', name: 'THE ENDLESS MEETING', short: 'MEETING',  tag: 'this could have been an email' },
+  { type: 'outage',   area: 'infra', color: '#ff8a5c', name: 'P0 MEGAOUTAGE',       short: 'OUTAGE',   tag: 'prod is down. everyone is watching.' },
+  { type: 'flaky',    area: 'be',    color: '#c9a8ff', name: 'THE FLAKY TEST',      short: 'FLAKY',    tag: 'passes locally. sometimes.' },
 ];
+
+// ---------------------------------------------------------------- difficulty
+// Eight knobs, each applied at exactly one existing choke point, so a row here
+// is the whole definition of a difficulty and nothing is hidden in the code:
+//   cups    starting coffee (startGame + jumpToSprint)
+//   off     damage for a letter in the WRONG language (bullets-vs-enemies).
+//           A match is always ×2; this is what a mismatch is worth, so it sets
+//           how much the red/green/blue stripe actually matters. Heavies and
+//           bosses take half of it, exactly as they always have.
+//   dead    standup deadline length — the sprint's clock
+//   dens    spawn interval (smaller = tickets arrive closer together)
+//   speed   ticket movement. Bosses are deliberately NOT scaled by it: their
+//           chases are tuned against the chair's top speed, and the fights have
+//           a cadence knob of their own that was built for this.
+//   cad     boss attack cadence (smaller = it acts more often)
+//   sp      score multiplier — the board has to compare like with like
+//   assists whether auto-aim / auto-shoot may be switched on at all
+// NORMAL is every multiplier at 1 and 3 cups: the game exactly as it shipped,
+// so scores set before this screen existed still mean what they meant.
+const DIFFS = [
+  { key: 'easy',   name: 'EASY',   tag: 'a sprint with slack in it',
+    cups: 5, off: 1.5,  dead: 1.35, dens: 1.3,  speed: 0.85, cad: 1.25, sp: 0.7, assists: true,  color: '#3fe08a' },
+  { key: 'normal', name: 'NORMAL', tag: 'the sprint as it was planned',
+    cups: 3, off: 1,    dead: 1,    dens: 1,    speed: 1,    cad: 1,    sp: 1,   assists: true,  color: '#7fe0ff' },
+  { key: 'hard',   name: 'HARD',   tag: 'someone already promised the client',
+    cups: 2, off: 0.75, dead: 0.82, dens: 0.78, speed: 1.12, cad: 0.85, sp: 1.5, assists: true,  color: '#ff8a5c' },
+  { key: 'claudelike', name: 'CLAUDELIKE', tag: 'one cup. no assists. ship it.',
+    cups: 1, off: 0.5,  dead: 0.7,  dens: 0.62, speed: 1.25, cad: 0.72, sp: 2.5, assists: false, color: '#8a63ff', locked: true },
+];
+const HARD_IDX = 2; // only a run at this level or above earns the unlock
+
+// Bosses resolved on HARD or above, by type, remembered across runs. Clearing
+// all six is what unlocks CLAUDELIKE. Easy and Normal clears deliberately do
+// not count — the credential is the point — and a debug run never counts, the
+// same rule the high score already follows.
+let bossesDown = new Set();
+try { bossesDown = new Set(JSON.parse(localStorage.getItem('jiraBlasterBossesHard') || '[]')); } catch (e) { /* private mode */ }
+const allBossesDown = () => BOSSES.every((b) => bossesDown.has(b.type));
+// Debug mode opens CLAUDELIKE so it can be played and tuned without grinding
+// six HARD bosses first. It does NOT earn it: recordBossKill still refuses to
+// log anything in a debug run, so switching debug off drops you straight back
+// to whatever you have actually resolved.
+const diffUnlocked = (d) => !d.locked || allBossesDown() || debugMode;
+
+// Resolving a boss says out loud whether it counted, and when it doesn't, why.
+// Silence here is what made the rule undiscoverable: a debug run and an EASY
+// run both looked exactly like a HARD one that had just been logged.
+function recordBossKill(e) {
+  const type = e.boss, at = e.y - 26;
+  if (bossesDown.has(type)) return;                 // already logged — no need to shout
+  if (debugMode) { addFloater(e.x, at, 'DEBUG RUN — NOT LOGGED', '#8f8fa8'); return; }
+  if (diffIdx < HARD_IDX) { addFloater(e.x, at, 'ONLY HARD COUNTS — NOT LOGGED', '#8f8fa8'); return; }
+  bossesDown.add(type);
+  try { localStorage.setItem('jiraBlasterBossesHard', JSON.stringify([...bossesDown])); } catch (err) { /* private mode */ }
+  const done = BOSSES.filter((b) => bossesDown.has(b.type)).length;
+  if (allBossesDown()) addFloater(e.x, at, 'CLAUDELIKE UNLOCKED!', '#8a63ff', true);
+  else addFloater(e.x, at, 'LOGGED ON HARD — ' + done + '/6', '#8a63ff');
+}
+
+let diffIdx = 1; // NORMAL
+try {
+  const saved = DIFFS.findIndex((d) => d.key === localStorage.getItem('jiraBlasterDiff'));
+  // a locked level can still be sitting in storage — cleared save, another
+  // browser profile — so the gate is re-checked on load, not just on click
+  if (saved >= 0 && diffUnlocked(DIFFS[saved])) diffIdx = saved;
+} catch (e) { /* private mode */ }
+const curDiff = () => DIFFS[diffIdx];
+const diffHits = [];       // click targets on the difficulty screen, rebuilt each frame
+let diffShownAt = 0;       // guards against the click that opened it landing on a row
+let diffDenied = -9;       // when a locked row was last tapped — flashes the reason
 
 const PAIN = ['PROD IS DOWN!', 'SCOPE CREEP!', 'MERGE CONFLICT!', 'P0! P0! P0!',
   'REGRESSION!', 'HOTFIX TIME!', 'BLOCKED!', 'IT WORKED LOCALLY…'];
@@ -1169,18 +1458,58 @@ function confirmSetup() {
   nameInput = playerName;
   try { localStorage.setItem('jiraBlasterName', playerName); } catch (e) { /* private mode */ }
   // Mid-run, this is "done editing" and drops you straight back into the fight
-  // wearing the changes. Only a visit from the welcome screen starts a run.
+  // wearing the changes. Only a visit from the welcome screen goes on to pick a
+  // difficulty — the run's difficulty is fixed once it has started.
   if (setupReturn === 'play') { setupReturn = 'menu'; state = 'play'; paused = false; return; }
-  startGame();
+  openDiff();
+}
+
+// ---------------------------------------------------------------- difficulty screen
+function openDiff() {
+  state = 'diff';
+  diffShownAt = menuT;
+  // never leave the cursor parked on a level that can't be started
+  if (!diffUnlocked(curDiff())) diffIdx = HARD_IDX;
+}
+
+function pickDiff(i) {
+  if (!diffUnlocked(DIFFS[i])) { diffDenied = menuT; sfx.block(); return; }
+  diffIdx = i;
+  try { localStorage.setItem('jiraBlasterDiff', DIFFS[i].key); } catch (e) { /* private mode */ }
+}
+
+// Move the cursor to the next selectable row, skipping anything still locked.
+function stepDiff(dir) {
+  const n = DIFFS.length;
+  for (let k = 1; k <= n; k++) {
+    const i = (diffIdx + dir * k + n * n) % n;
+    if (diffUnlocked(DIFFS[i])) { pickDiff(i); return; }
+  }
+}
+
+function diffKey(e) {
+  const k = e.key;
+  if (k === 'Enter' || k === ' ') { startGame(); return; }
+  if (k === 'Escape') { openSetup('menu'); return; }
+  if (k === 'ArrowUp' || k === 'ArrowLeft') { stepDiff(-1); return; }
+  if (k === 'ArrowDown' || k === 'ArrowRight') { stepDiff(1); return; }
+  if (k >= '1' && k <= String(DIFFS.length)) pickDiff(+k - 1);
 }
 
 function startGame() {
   state = 'play';
   paused = false;
+  // A difficulty borrowed from debug mode must not outlive debug being switched
+  // off: CLAUDELIKE pays ×2.5 SP, and that score reaches the standup board.
+  if (!diffUnlocked(curDiff())) diffIdx = HARD_IDX;
+  // the assist toggles survive between runs, so a level that forbids them has
+  // to switch them off rather than just refuse the keypress
+  if (!curDiff().assists) { autoAim = false; autoShoot = false; }
   t = 0; shake = 0; score = 0; kills = 0; overTimer = 0; clearMsg = '';
   player = {
     x: VW / 2, y: VH / 2, vx: 0, vy: 0, angle: 0, r: 7,
-    hp: 3, maxHp: 3, fireCd: 0, invuln: 0, rapidT: 0, duckT: 0, // 3 coffee cups, no passive regen
+    // coffee cups come from the difficulty; still no passive regen
+    hp: curDiff().cups, maxHp: curDiff().cups, fireCd: 0, invuln: 0, rapidT: 0, duckT: 0,
   };
   bullets = []; enemies = []; particles = []; floaters = []; pickups = []; hazards = [];
   sprint = 1; phase = 'break'; breakTimer = 2.5;
@@ -1306,7 +1635,8 @@ function makeEnemy(type, x, y) {
     type, x, y,
     area: type === 'meeting' ? null : pick(AREA_KEYS),
     hp: def.hp, maxHp: def.hp,
-    sp: def.sp * rnd(0.9, 1.1),
+    // bosses keep their tuned speed — the difficulty leans on their cadence
+    sp: def.sp * rnd(0.9, 1.1) * (def.boss ? 1 : curDiff().speed),
     r: def.r, score: def.score, img: def.img, scale: def.scale || 1,
     wobPhase: rnd(0, TAU), wobFreq: rnd(def.wobFreq[0], def.wobFreq[1]), wobAmp: def.wobAmp,
     touchCd: 0, spawnT: 0.4, windup: false, grazed: false, grazeArmed: false, vx: 0, vy: 0, burstT: 0,
@@ -1318,15 +1648,25 @@ function makeEnemy(type, x, y) {
 
 // ---------------------------------------------------------------- hazards
 // The one thing on the field that is not a ticket: code the codebase throws
-// back at you. Same glyphs you fire, in grey (thrown source) or orange
-// (burning ground). They hurt on contact, ignore your letters completely, and
-// fade out on their own — so the room itself becomes a threat instead of just
-// the boss standing in it. Inert for armT while they materialize, the same
-// rule every spawning ticket follows.
-const HAZARD_IMG = { code: glyphSet('#8f8fa8'), fire: glyphSet('#ff8a5c') };
+// back at you. Same glyphs you fire, and it burns. They hurt on contact,
+// ignore your letters completely, and fade out on their own — so the room
+// itself becomes a threat instead of just the boss standing in it. Inert for
+// armT while they materialize, the same rule every spawning ticket follows.
+//
+// Thrown code used to be flat grey, which read as debris rather than danger
+// and looked like nothing else on the field. It now burns like the ground the
+// Megaoutage leaves behind — but as a cooling EMBER rather than a steady
+// flame: white-hot as it leaves the boss, orange in flight, dull red as it
+// burns out. That keeps the two apart at a glance, which matters because one
+// is flying at you and the other is lying where it fell.
+const EMBER = ['#ffd23f', '#ff8a5c', '#ff5a6e'];
+const HAZARD_IMG = {
+  code: EMBER.map((c) => glyphSet(c)),
+  fire: [glyphSet('#ff8a5c')],   // burning ground: one steady tone
+};
 function throwHazard(x, y, vx, vy, life, kind) {
   hazards.push({
-    x, y, vx, vy, r: 5, life, kind: kind || 'code',
+    x, y, vx, vy, r: 5, life, life0: life, kind: kind || 'code',
     ch: pick(GLYPHS), armT: 0.25,
   });
   if (hazards.length > HAZARD_CAP) hazards.shift();
@@ -1338,21 +1678,34 @@ function throwHazard(x, y, vx, vy, life, kind) {
 // fattening its HP bar. e.cad is the fight's cadence multiplier (see bossInit).
 const cad = (e, secs) => secs * (e.cad || 1);
 
+// STACK TRACE: the Monolith's ring of thrown letters. Speed × life is its
+// reach — at 55×3 = 165px you could simply stand in the far corner and never
+// see it, which made the arena small and the boss a stationary chore. At
+// 78×4.2 ≈ 328px it covers the room's full height from the middle, so the ring
+// is dodged by moving rather than out-ranged, which is what it was always
+// described as. It arrives on TRACE_PERIOD, still behind the 0.8s wind-up ring
+// — more often, but never without warning.
+const TRACE_N = 9, TRACE_SPEED = 78, TRACE_LIFE = 4.2, TRACE_PERIOD = 3.2;
+
 // Per-boss state, set after the HP scaling in spawnBoss so thresholds match.
 // Lap and enrage land first, because every timer below is set through cad().
 function bossInit(e) {
-  e.cad = Math.pow(0.88, e.lap || 0);   // each lap runs the whole fight quicker
+  e.cad = Math.pow(0.88, e.lap || 0) * curDiff().cad; // lap + difficulty both set the pace
   e.sp *= 1 + 0.08 * (e.lap || 0);
   if (bossEnraged) { e.cad *= 0.5; e.sp *= 1.3; } // a part that arrives mid-enrage
   if (e.boss === 'monolith') {
     e.langT = cad(e, 3.2); e.shedT = cad(e, 4.5);
     e.shedStep = Math.round(e.maxHp / 7); e.nextShed = e.maxHp - e.shedStep;
-    e.traceT = cad(e, 5); e.traceWind = 0;
+    e.traceT = cad(e, TRACE_PERIOD); e.traceWind = 0;
     e.spBase = e.sp; // rage scales off this — see the monolith branch in bossBehave
   }
-  if (e.boss === 'screep') { e.growT = cad(e, 3); e.grown = 0; e.growCap = (e.lap || 0) >= 1 ? 8 : 6; e.lastHitT = 9; }
-  if (e.boss === 'conflict') { e.reviveT = 0; e.twin = null; e.revive = null; }
-  if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); }
+  if (e.boss === 'screep') { e.scope = []; e.grown = 0; e.growT = cad(e, SCOPE_FIRST); e.shootT = cad(e, SCOPE_SHOOT); }
+  if (e.boss === 'conflict') {
+    e.reviveT = 0; e.twin = null; e.revive = null;
+    e.feat = []; e.cutFeat = 0; e.clean = false;
+    e.featT = cad(e, 1.2); e.shootT = cad(e, CONFLICT_SHOOT);
+  }
+  if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); e.hueT = cad(e, MTG_HUE); }
   if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; }
   if (e.boss === 'flaky') { e.pass = true; e.phaseT = cad(e, 1.7); e.fails = 0; e.blinkT = 0; }
 }
@@ -1382,6 +1735,7 @@ function spawnBoss(n) {
   if (def.type === 'conflict') {
     const a = make(VW * 0.24, VH * 0.5), b = make(VW * 0.76, VH * 0.5);
     a.twin = b; b.twin = a;
+    a.branch = 'main'; b.branch = 'master';
   } else {
     make(VW / 2, 46);
   }
@@ -1417,10 +1771,61 @@ function shedDebt(e, n) {
   addFloater(e.x, e.y - e.r - 6, 'TECH DEBT!', '#8fa8d8');
 }
 
-// How long Scope Creep has to go unhit before its growth clock starts moving
-// again. Long enough to switch language or clear one story, short enough that
-// it punishes actually leaving it alone.
-const CREEP_GRACE = 1.2;
+// SCOPE CREEP is armoured by its own scope. It buds tickets that stay GLUED to
+// its edge — they ride its slot, move as one body with it, and while a single
+// one is still attached the boss itself cannot be damaged from any angle. The
+// fight is therefore never a damage race: it is strip the scope, then burn the
+// thing in the window before more grows.
+//
+// The old version was a suppression race — any hit froze a growth clock — which
+// meant a player holding the trigger saw nothing happen at all, and growing
+// only ever added HP. This inverts it: growth is what makes it invulnerable,
+// not what makes it fat, so ignoring the scope is the one thing you can't do.
+//
+// SCOPE_GROW has to stay slower than a competent player clears one ticket, or
+// the vulnerable window never opens; killing the last attachment also resets
+// the clock to a full interval, so the window is guaranteed by construction
+// rather than by luck.
+const SCOPE_GAP = 15;      // centre-to-centre ride distance out from the boss edge
+const SCOPE_MAX = 5;       // most that can be attached at once
+const SCOPE_GROW = 2.6;    // seconds between attachments
+const SCOPE_FIRST = 1.1;   // the first is quick, so the rule teaches itself early
+const SCOPE_SHOOT = 2.2;   // it throws requirements at you while you strip it
+
+// A free-ish angle on the boss's rim: sample a few and take the one furthest
+// from what is already attached, so the scope spreads around it instead of
+// stacking on one side and leaving a bare flank.
+function scopeAngle(e) {
+  let best = rnd(0, TAU), bestGap = -1;
+  for (let k = 0; k < 10; k++) {
+    const a = rnd(0, TAU);
+    let gap = Math.PI;
+    for (const s of e.scope) {
+      const dd = Math.abs(((a - s.scopeA + Math.PI) % TAU + TAU) % TAU - Math.PI);
+      gap = Math.min(gap, dd);
+    }
+    if (gap > bestGap) { bestGap = gap; best = a; }
+  }
+  return best;
+}
+
+function growScope(e) {
+  const a = scopeAngle(e);
+  const m = makeEnemy('story',
+    clamp(e.x + Math.cos(a) * (e.r + SCOPE_GAP), 10, VW - 10),
+    clamp(e.y + Math.sin(a) * (e.r + SCOPE_GAP), 10, VH - 10));
+  m.scopeA = a;
+  m.scopeOf = e;
+  m.spawnT = 0.45;    // materializes like anything else — never a cheap shot
+  m.flank = 0;
+  e.scope.push(m);
+  e.grown++;
+  addFloater(e.x, e.y - e.r - 6, CREEP[(e.grown - 1) % CREEP.length], '#ff8fa0');
+  sfx.ding();
+}
+
+// Anything still glued to it. While this is true the boss shrugs off letters.
+const scopeAttached = (e) => !!(e.scope && e.scope.some((s) => enemies.includes(s)));
 
 // How close you have to be for The Endless Meeting to consider you an
 // attendee, how hard it drags you in, and how close a resolved attendee has
@@ -1428,6 +1833,10 @@ const CREEP_GRACE = 1.2;
 const ATTENDANCE_R = 130;
 const MEETING_PULL = 28;   // u/s — noticeable, never faster than the chair
 const DERAIL_R = 60;
+
+// How often the agenda changes colour. Slower than the ~1.4s window it opens,
+// so a switch never invalidates a window you already committed to.
+const MTG_HUE = 4.5;
 
 // The only real way into the agenda: something interrupts it. Called both by
 // the boss losing its own thread and by a kill inside DERAIL_R.
@@ -1460,9 +1869,14 @@ function reviveTwin(e) {
   t.spawnT = 0.5;
   bossInit(t);
   t.reopens = src.reopens; // so the next reopen is weaker again
+  t.branch = src.branch;   // main comes back as main
   t.twin = e; e.twin = t;
   bossParts.push(t);
-  addFloater(t.x, t.y - 16, 'CONFLICT REOPENED!', '#ff5a6e', true);
+  // The reconnect beat you: both trunks diverge again and start cutting
+  // feature branches from scratch, so the work has to be redone before either
+  // can be merged. This is the cost of killing one side and stalling.
+  divergeAgain();
+  addFloater(t.x, t.y - 16, 'REOPENED — BOTH BRANCHES DIVERGED', '#ff5a6e', true);
   sfx.siren();
   shake += 5;
 }
@@ -1475,6 +1889,14 @@ function reviveTwin(e) {
 // (1.2s at 1.3x speed ≈ 70px): every time it goes immune it can close the
 // whole gap, and the immune window becomes something you dodge.
 const FLAKY_KEEP = 70;
+
+// The retry hop: how far it re-runs the suite, and how often. It was every 3rd
+// failure and 80px — a nudge you barely registered, usually still inside your
+// existing firing line. At every 2nd failure and 170px it genuinely relocates
+// the fight, which is the point of a test that passes locally.
+// FLAKY_KEEP above still governs the kiting, so this cannot make it
+// unreachable: the hop moves it, the FAIL window still walks it back to you.
+const FLAKY_HOP = 170, FLAKY_HOP_EVERY = 2;
 
 // Returns true when the boss moved itself this frame (skipping the generic seek).
 function bossBehave(e, dt, ux, uy) {
@@ -1502,12 +1924,12 @@ function bossBehave(e, dt, ux, uy) {
     if (e.traceWind > 0) {
       e.traceWind -= dt;
       if (e.traceWind <= 0) {
-        e.traceT = cad(e, 5);
+        e.traceT = cad(e, TRACE_PERIOD);
         const off = rnd(0, TAU);
-        for (let k = 0; k < 9; k++) {
-          const a = off + TAU * k / 9;
+        for (let k = 0; k < TRACE_N; k++) {
+          const a = off + TAU * k / TRACE_N;
           throwHazard(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
-            Math.cos(a) * 55, Math.sin(a) * 55, 3);
+            Math.cos(a) * TRACE_SPEED, Math.sin(a) * TRACE_SPEED, TRACE_LIFE);
         }
         shake += 3;
       }
@@ -1521,27 +1943,29 @@ function bossBehave(e, dt, ux, uy) {
     return false;
   }
   if (e.boss === 'screep') {
-    // Scope only creeps while nobody is pushing back. The growth clock stops
-    // under sustained fire and starts again 1.2s after you turn away, so the
-    // choice between burning the boss and clearing the stories it buds off is
-    // finally a real one — the deadline is the one you set.
-    e.lastHitT += dt;
-    if (e.lastHitT > CREEP_GRACE) e.growT -= dt;
-    if (e.growT <= 0 && e.grown < e.growCap) {
-      e.growT = cad(e, 3);
-      e.grown++;
-      e.scale += 0.22; e.r += 2; e.sp += 3;
-      e.maxHp += 10; e.hp += 10;
-      addFloater(e.x, e.y - e.r - 6, CREEP[(e.grown - 1) % CREEP.length], '#ff8fa0');
-      // the requirements doc, thrown at your head
+    const had = e.scope.length;
+    e.scope = e.scope.filter((s) => enemies.includes(s));
+    // Stripping the last one buys a clean window: the clock restarts in full
+    // rather than resuming wherever it happened to be.
+    if (had && !e.scope.length) {
+      e.growT = cad(e, SCOPE_GROW);
+      addFloater(e.x, e.y - e.r - 10, 'SCOPE CLEAR — HIT IT NOW', '#3fe08a', true);
+      sfx.bossDown();
+    }
+    e.growT -= dt;
+    if (e.growT <= 0) {
+      e.growT = cad(e, SCOPE_GROW);
+      if (e.scope.length < SCOPE_MAX) { growScope(e); shake += 2; }
+    }
+    // the requirements doc, thrown at your head while you work
+    e.shootT -= dt;
+    if (e.shootT <= 0) {
+      e.shootT = cad(e, SCOPE_SHOOT);
       const a = Math.atan2(player.y - e.y, player.x - e.x);
       for (const spread of [-0.14, 0.14]) {
         throwHazard(e.x + Math.cos(a + spread) * e.r, e.y + Math.sin(a + spread) * e.r,
           Math.cos(a + spread) * 90, Math.sin(a + spread) * 90, 2);
       }
-      // what it buds off spreads sideways rather than walking straight in
-      for (const m of spawnMinion('story', e, 1)) m.flank = Math.random() < 0.5 ? 1 : -1;
-      shake += 2;
     }
     return false;
   }
@@ -1549,6 +1973,32 @@ function bossBehave(e, dt, ux, uy) {
     if (e.reviveT > 0) {
       e.reviveT -= dt;
       if (e.reviveT <= 0) reviveTwin(e);
+    }
+    // --- feature branches: cut them, and go clean once they're all closed
+    e.feat = e.feat.filter((f) => enemies.includes(f));
+    if (!e.clean) {
+      // Latch CLEAN before the cut timer, never after: closing the last branch
+      // on the same frame the timer happens to fire would otherwise re-open the
+      // side and the clear would silently not count.
+      if ((e.cutFeat || 0) >= FEAT_QUOTA && !e.feat.length) {
+        e.clean = true;
+        addFloater(e.x, e.y - e.r - 10, e.branch + ' IS CLEAN', '#3fe08a', true);
+        sfx.bossDown();
+      } else {
+        e.featT -= dt;
+        if (e.featT <= 0 && e.feat.length < FEAT_MAX) {
+          e.featT = cad(e, FEAT_EVERY);
+          cutFeature(e);
+        }
+      }
+    }
+    // --- a trunk throws letters at you the whole time
+    e.shootT -= dt;
+    if (e.shootT <= 0) {
+      e.shootT = cad(e, CONFLICT_SHOOT);
+      const a = Math.atan2(player.y - e.y, player.x - e.x);
+      throwHazard(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
+        Math.cos(a) * 105, Math.sin(a) * 105, 2.6);
     }
     const tw = e.twin && enemies.includes(e.twin) ? e.twin : null;
     if (!tw) return false; // last side standing: the ordinary seek is threat enough
@@ -1590,12 +2040,24 @@ function bossBehave(e, dt, ux, uy) {
         player.y = clamp(player.y + (e.y - player.y) * pull, player.r, VH - player.r);
       }
     }
+    // The room keeps changing what it's about. Its own area rotates, and the
+    // attendees it calls in are deliberately the OTHER two areas — so the
+    // language that clears a path through the room is never the language that
+    // hurts the boss, and the window it opens costs you a switch to use.
+    e.hueT -= dt;
+    if (e.hueT <= 0) {
+      e.hueT = cad(e, MTG_HUE);
+      e.area = pick(AREA_KEYS.filter((a) => a !== e.area));
+      addFloater(e.x, e.y - e.r - 8, 'NEW AGENDA — ' + LANGS.find((l) => l.area === e.area).name, AREAS[e.area].color);
+      sfx.ding();
+    }
     e.callT -= dt;
     if (e.callT <= 0) {
       e.callT = cad(e, 3);
       // past halfway it stops calling them in one at a time
       const split = e.hp < e.maxHp * 0.5;
-      spawnMinion('story', e, split ? 2 : 1);
+      const others = AREA_KEYS.filter((a) => a !== e.area);
+      for (const m of spawnMinion('story', e, split ? 2 : 1)) m.area = pick(others);
       if (split && !e.breakoutHint) { e.breakoutHint = true; addFloater(e.x, e.y - e.r - 8, 'BREAKOUT ROOMS', '#b9c4dd'); }
     }
     return false;
@@ -1640,8 +2102,8 @@ function bossBehave(e, dt, ux, uy) {
       e.phaseT = e.pass ? cad(e, 1.7) : cad(e, 1.2);
       addFloater(e.x, e.y - e.r - 8, e.pass ? 'PASS' : 'FAIL — IMMUNE', e.pass ? '#3fe08a' : '#ff5a6e');
       sfx.ding();
-      // every third failure it just runs the suite again, somewhere else
-      if (!e.pass && ++e.fails % 3 === 0) {
+      // every other failure it just runs the suite again, somewhere else
+      if (!e.pass && ++e.fails % FLAKY_HOP_EVERY === 0) {
         e.blinkT = 0.3;
         addFloater(e.x, e.y - e.r - 16, 'RETRYING…', '#c9a8ff');
       }
@@ -1649,9 +2111,18 @@ function bossBehave(e, dt, ux, uy) {
     if (e.blinkT > 0) {
       e.blinkT -= dt;
       if (e.blinkT <= 0) {
-        const a = rnd(0, TAU);
-        e.x = clamp(e.x + Math.cos(a) * 80, e.r, VW - e.r);
-        e.y = clamp(e.y + Math.sin(a) * 80, e.r, VH - e.r);
+        // The hop swings AROUND you, not away from you: it keeps roughly the
+        // distance it already had and re-appears that far along the arc, so it
+        // lands on a completely different side of the room without ever
+        // out-ranging the fight. A hop in a free direction fails the threat
+        // proof outright — at this size and rate it retreats faster than a FAIL
+        // window can close, and a player who stands still is never reached,
+        // which is the same trap FLAKY_KEEP was written to escape.
+        const keep = clamp(Math.hypot(e.x - player.x, e.y - player.y), FLAKY_KEEP, 190);
+        const swing = 2 * Math.asin(Math.min(1, FLAKY_HOP / (2 * keep))) * (Math.random() < 0.5 ? 1 : -1);
+        const a = Math.atan2(e.y - player.y, e.x - player.x) + swing;
+        e.x = clamp(player.x + Math.cos(a) * keep, e.r, VW - e.r);
+        e.y = clamp(player.y + Math.sin(a) * keep, e.r, VH - e.r);
         e.spawnT = 0.3; // lands inert and pulsing, like anything materializing
         addParticles(e.x, e.y, '#c9a8ff', 10, 90);
       }
@@ -1672,6 +2143,53 @@ function bossBehave(e, dt, ux, uy) {
   return false;
 }
 
+// MERGE CONFLICT is two long-lived branches, `main` and `master`, that have
+// diverged. Each keeps cutting feature branches off itself — small tickets
+// tethered to their parent by a dashed line — and while ANY feature branch is
+// still open anywhere, neither trunk can be merged: letters bounce off both.
+//
+// A side that has cut its quota and had them all closed goes CLEAN and stops
+// cutting new ones, which is what makes the work finite: clear one side, then
+// the other, and only then are the trunks themselves killable. Killing one
+// starts the reconnect countdown that was always here — but now, if it runs
+// out, both sides diverge again and start cutting features from scratch.
+const FEAT_QUOTA = 3;      // a side must cut this many before it can be called clean
+const FEAT_MAX = 3;        // open at once from one side
+const FEAT_EVERY = 3.4;    // seconds between cuts
+const CONFLICT_SHOOT = 3.6; // seconds between the letters a trunk throws at you
+const FEAT_NAMES = ['feat/login', 'fix/npe', 'feat/dark-mode', 'fix/flaky-ci',
+  'feat/export', 'fix/off-by-one', 'feat/webhooks', 'fix/timezone'];
+
+// Any feature branch still open, on either trunk. While true both are immune.
+const featuresOpen = () => bossParts.some((b) =>
+  b.boss === 'conflict' && b.feat && b.feat.some((f) => enemies.includes(f)));
+
+function cutFeature(e) {
+  const a = rnd(0, TAU);
+  const m = makeEnemy('bug',
+    clamp(e.x + Math.cos(a) * (e.r + 18), 12, VW - 12),
+    clamp(e.y + Math.sin(a) * (e.r + 18), 12, VH - 12));
+  m.featOf = e;
+  m.branchName = pick(FEAT_NAMES);
+  m.area = e.area;                                   // a branch inherits its trunk
+  m.spawnT = 0.45;
+  m.flank = Math.random() < 0.5 ? 1 : -1;            // they arc in rather than queue
+  e.feat.push(m);
+  e.cutFeat = (e.cutFeat || 0) + 1;
+  return m;
+}
+
+// Both trunks diverge again: everything goes back to needing its features
+// closed first. Called when the reconnect countdown beats you.
+function divergeAgain() {
+  for (const b of bossParts) {
+    if (b.boss !== 'conflict') continue;
+    b.clean = false;
+    b.cutFeat = 0;
+    b.featT = cad(b, 1.2);
+  }
+}
+
 // Twins sitting on top of each other are rebasing onto one another and take
 // half damage until you split them up. Together with the pincer steering it
 // makes Merge Conflict a positioning fight: they want to converge on you, and
@@ -1682,7 +2200,9 @@ const rebasing = (e) => e.boss === 'conflict' && e.twin && enemies.includes(e.tw
 
 // Letters a boss currently ignores. Both cases are telegraphed on screen.
 function bossBlocks(e) {
-  return (e.boss === 'mtgboss' && !e.open) || (e.boss === 'flaky' && !e.pass);
+  return (e.boss === 'mtgboss' && !e.open) || (e.boss === 'flaky' && !e.pass) ||
+    (e.boss === 'screep' && scopeAttached(e)) ||
+    (e.boss === 'conflict' && featuresOpen());
 }
 
 // Returns true when that was the last live part — the fight is over.
@@ -1705,7 +2225,7 @@ function killBoss(e, gained) {
     const twin = e.twin;
     const reopens = (e.reopens || 0) + 1;
     twin.reviveT = 3.2;
-    twin.revive = { maxHp: e.maxHp, hp: Math.max(1, Math.round(e.maxHp * Math.pow(0.5, reopens))), score: e.score, area: e.area, reopens };
+    twin.revive = { maxHp: e.maxHp, hp: Math.max(1, Math.round(e.maxHp * Math.pow(0.5, reopens))), score: e.score, area: e.area, reopens, branch: e.branch };
     twin.twin = null;
     addFloater(twin.x, twin.y - twin.r - 12, 'RESOLVE THE OTHER SIDE — ×2 DAMAGE!', '#ffd23f', true);
     sfx.siren();
@@ -1715,6 +2235,7 @@ function killBoss(e, gained) {
 
   const over = !bossParts.length;
   if (over) {
+    recordBossKill(e); // six of these on HARD is what unlocks CLAUDELIKE
     addFloater(e.x, e.y, (bossDef ? bossDef.name : 'BOSS') + ' RESOLVED! +' + gained, '#ffd23f', true);
     sfx.bossDown();
     // a boss always pays out — no dice roll
@@ -1842,6 +2363,21 @@ function spawnEnemy(type, side) {
 function addFloater(x, y, text, color, big) {
   floaters.push({ x, y, text, color, big: !!big, life: big ? 1.6 : 1 });
 }
+
+// Every bounced letter says why it bounced, in two halves that read as one
+// sentence: the ticket calls out "BLOCKED BY..." and its blocker answers "ME!".
+// The link line already draws the relationship, but only while you're looking
+// at it — this says it at the moment you're staring at your own bullets doing
+// nothing, and it points at the thing to shoot instead.
+const BLOCK_CALL_GAP = 0.4; // s — holding the trigger shouldn't stack the text
+function callOutBlocker(story, blocker) {
+  if (t - (story.blockCallT ?? -9) < BLOCK_CALL_GAP) return;
+  story.blockCallT = t;
+  // ASCII dots, not '…': the single-cell ellipsis reads as an underscore at 8px
+  addFloater(story.x, story.y - story.r - 8, 'BLOCKED BY...', '#7fe0ff');
+  addFloater(blocker.x, blocker.y - blocker.r - 8, 'ME!', '#7fe0ff');
+}
+
 function addParticles(x, y, color, n, speed) {
   for (let i = 0; i < n; i++) {
     const a = rnd(0, TAU), s = rnd(0.2, 1) * (speed || 60);
@@ -1909,7 +2445,7 @@ function killEnemy(e, silent) {
   enemies.splice(enemies.indexOf(e), 1);
   kills++;
   comboTick();
-  const gained = Math.round(e.score * combo * (e.enraged ? 1.5 : 1) * assistMul());
+  const gained = Math.round(e.score * combo * (e.enraged ? 1.5 : 1) * assistMul() * curDiff().sp);
   score += gained;
   // resolving a blocker frees whatever it was blocking
   for (const o of enemies) if (o.blockedBy === e) { o.blockedBy = null; addFloater(o.x, o.y - 8, 'UNBLOCKED!', '#7fe0ff'); }
@@ -2051,12 +2587,12 @@ function update(dt) {
       phase = 'wave';
       spawnQueue = buildSprint(sprint);
       // density is the dial: interval decays 8% per sprint, floored at 0.3s
-      spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1));
+      spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1)) * curDiff().dens;
       spawnTimer = 0;
       // the sprint has a standup deadline; boss fights are untimed
       // carry-over counts against the clock too — a sprint that inherits a
       // backlog gets the time to work it, but no more than that
-      deadlineT = sprint % 4 === 0 ? 0 : 20 + (spawnQueue.length + backlog.length) * 0.7;
+      deadlineT = sprint % 4 === 0 ? 0 : (20 + (spawnQueue.length + backlog.length) * 0.7) * curDiff().dead;
       sfx.wave();
       if (sprint % 4 === 0) {
         spawnBoss(sprint); // boss sprints are the boss, alone
@@ -2161,6 +2697,14 @@ function update(dt) {
       // before it settles into hunting you
       e.burstT -= dt;
       e.x += e.vx * dt; e.y += e.vy * dt;
+    } else if (e.scopeOf && enemies.includes(e.scopeOf)) {
+      // Glued to Scope Creep: it doesn't hunt you, it IS the boss's edge. It
+      // rides its slot on the rim, so the whole thing moves as one body.
+      // Once its parent is gone this test fails and it drops through to the
+      // ordinary seek below — loose scope goes back to being a plain ticket.
+      const b = e.scopeOf;
+      e.x = clamp(b.x + Math.cos(e.scopeA) * (b.r + SCOPE_GAP), 8, VW - 8);
+      e.y = clamp(b.y + Math.sin(e.scopeA) * (b.r + SCOPE_GAP), 8, VH - 8);
     } else if (e.blocks && enemies.includes(e.blocks)) {
       // A blocker escorts the ticket it blocks instead of hunting you: it
       // steers for the slot tucked behind that ticket. Matching speed alone
@@ -2292,7 +2836,8 @@ function update(dt) {
       const dx = b.x - e.x, dy = b.y - e.y;
       if (dx * dx + dy * dy < (e.r + 2) * (e.r + 2)) {
         bullets.splice(i, 1);
-        if (e.type === 'meeting' || bossBlocks(e) || (e.blockedBy && enemies.includes(e.blockedBy))) {
+        const blocker = e.blockedBy && enemies.includes(e.blockedBy) ? e.blockedBy : null;
+        if (e.type === 'meeting' || bossBlocks(e) || blocker) {
           // meeting invites block your letters — infinite HP, zero shame.
           // A boss in its immune window, or a BLOCKED BY ticket whose blocker
           // still lives, shrugs them off the same way.
@@ -2302,15 +2847,18 @@ function update(dt) {
             e.hp = Math.min(e.maxHp, e.hp + 0.5);
             if (!e.fedHint) { e.fedHint = true; addFloater(e.x, e.y - e.r - 8, 'IT FED ON THAT', '#c9a8ff'); }
           }
+          if (blocker) callOutBlocker(e, blocker);
           addParticles(b.x, b.y, '#5a6a90', 3, 40);
           sfx.block();
           continue outer;
         }
         const matched = e.area && LANGS[b.lang].area === e.area;
-        let dmg = matched ? 2 : 1; // right language for the area = double damage
+        // A match is always ×2. What a MISmatch is worth is the difficulty's
+        // call — it decides whether the stripe is a bonus or an instruction.
+        let dmg = matched ? 2 : curDiff().off;
         // heavies resist off-area letters — switching language is the real answer
         if (!matched && e.area && (e.boss || e.type === 'epic')) {
-          dmg = 0.5;
+          dmg = curDiff().off * 0.5;
           if (!e.resistHint) { e.resistHint = true; addFloater(e.x, e.y - e.r - 8, 'WRONG LANGUAGE — ×½', '#8f8fa8'); }
         }
         if (e.boss === 'outage' && e.mode === 'down') dmg *= 2; // the incident window
@@ -2320,7 +2868,6 @@ function update(dt) {
           if (!e.rebaseHint) { e.rebaseHint = true; addFloater(e.x, e.y - e.r - 8, 'REBASING — SPLIT THEM UP', '#ffd23f'); }
         }
         e.hp -= dmg;
-        if (e.boss === 'screep') e.lastHitT = 0; // pushing back freezes the scope
         if (!e.boss) { // bosses are too heavy to shove around
           e.x += Math.cos(player.angle) * 1.5; // knockback nudge
           e.y += Math.sin(player.angle) * 1.5;
@@ -2388,6 +2935,9 @@ function updateFx(dt) {
 
 // ---------------------------------------------------------------- draw
 function draw() {
+  // Everything below this line draws in 640×360 game units regardless of mode —
+  // one transform is what keeps ~3000 lines of drawing code resolution-agnostic.
+  ctx.setTransform(RS(), 0, 0, RS(), 0, 0);
   ctx.save();
   if (shake > 0.3) ctx.translate(rnd(-shake, shake) * 0.6, rnd(-shake, shake) * 0.6);
 
@@ -2395,6 +2945,8 @@ function draw() {
 
   if (state === 'menu') { drawMenu(); ctx.restore(); return; }
   if (state === 'setup') { drawSetup(); ctx.restore(); return; }
+  if (state === 'diff') { drawDiff(); ctx.restore(); return; }
+  if (state === 'help') { drawHelp(); ctx.restore(); return; }
 
   // pickups
   for (const pk of pickups) {
@@ -2411,7 +2963,12 @@ function draw() {
     ctx.globalAlpha = hz.armT > 0
       ? 0.25 + 0.35 * Math.abs(Math.sin(hz.armT * 26))
       : clamp(hz.life, 0, 1);
-    ctx.drawImage(HAZARD_IMG[hz.kind][hz.ch], Math.round(hz.x) - 2, Math.round(hz.y) - 3);
+    // hotter the fresher it is — the last frames of a thrown letter are the
+    // dull red of something about to go out
+    const set = HAZARD_IMG[hz.kind];
+    const burn = set.length === 1 ? 0
+      : clamp(Math.floor((1 - hz.life / hz.life0) * set.length), 0, set.length - 1);
+    ctx.drawImage(set[burn][hz.ch], Math.round(hz.x) - 2, Math.round(hz.y) - 3);
     ctx.globalAlpha = 1;
     if (hz === culprit && hitFreeze > 0) { // freeze frame: that's what got you
       ctx.strokeStyle = Math.floor(hitFreeze * 16) % 2 === 0 ? '#ffffff' : '#ff5a6e';
@@ -2446,7 +3003,7 @@ function draw() {
       const pulse = Math.abs(Math.sin(e.spawnT * 26));
       ctx.globalAlpha = 0.25 + 0.35 * pulse;
       ctx.drawImage(e.img, ex, ey, w, h);
-      if (e.area) { ctx.fillStyle = AREAS[e.area].color; ctx.fillRect(ex + 1, ey + 1, 2, h - 2); }
+      if (e.area) { ctx.fillStyle = AREAS[e.area].color; ctx.fillRect(ex + 1, ey + 1, w - 2, STRIPE_W); }
       ctx.globalAlpha = 0.4 + 0.6 * pulse;
       ctx.strokeStyle = '#dfe6ff';
       ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
@@ -2458,14 +3015,24 @@ function draw() {
     ctx.translate(Math.round(e.x), Math.round(e.y));
     ctx.rotate(Math.sin(menuT * 2 + e.wobPhase) * 0.14);
     ctx.drawImage(e.img, -w / 2, -h / 2, w, h);
-    // area stripe on the left edge: red = FE, green = BE, blue = INFRA
-    if (e.area) { ctx.fillStyle = AREAS[e.area].color; ctx.fillRect(-w / 2 + 1, -h / 2 + 1, 2, h - 2); }
+    // area stripe across the top edge, like a document header:
+    // red = FE, green = BE, blue = INFRA
+    if (e.area) { ctx.fillStyle = AREAS[e.area].color; ctx.fillRect(-w / 2 + 1, -h / 2 + 1, w - 2, STRIPE_W); }
     ctx.restore();
 
     // hotfixes flash orange the whole way in
     if (e.type === 'hotfix' && Math.floor(t * 12) % 2 === 0) {
       ctx.strokeStyle = '#ff8a5c';
       ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
+    }
+    // a feature branch wears its name, so the fiction is legible on the field
+    if (e.branchName) {
+      ctx.textAlign = 'center';
+      ctx.font = '6px monospace';
+      ctx.fillStyle = '#080c18';
+      ctx.fillText(e.branchName, Math.round(e.x) + 1, ey + h + 8);
+      ctx.fillStyle = '#7fe0ff';
+      ctx.fillText(e.branchName, Math.round(e.x), ey + h + 7);
     }
     // BLOCKED BY: link line to the blocker + shield border while it lives
     if (e.blockedBy && enemies.includes(e.blockedBy)) {
@@ -2515,7 +3082,7 @@ function draw() {
       ctx.save();
       ctx.translate(Math.round(p.x), Math.round(p.y));
       ctx.rotate(p.angle + Math.PI / 2); // sprite faces north; angle 0 = east
-      ctx.drawImage(devImg, -17, -17);
+      ctx.drawImage(devSprite(), -17, -17);
       ctx.restore();
     }
     // facing dots trace the firing line
@@ -2614,7 +3181,18 @@ function draw() {
     // meant dying for it. Centred so it clears the debug column on the left.
     pauseHits.length = 0;
     ctx.font = 'bold 10px monospace';
-    uiButton(pauseHits, VW / 2 - 84, VH - 44, 168, 24, 'C — EDIT YOUR DEV', '#8a63ff', () => openSetup('play'));
+    const armed = quitArmed();
+    uiButton(pauseHits, btnX(3, 0), BTN_Y, BTN_W, BTN_H,
+      armed ? 'SURE? — QUIT' : 'Q — QUIT RUN',
+      armed && Math.floor(menuT * 6) % 2 === 0 ? '#ffd23f' : armed ? '#ff5a6e' : '#5a6a90', quitRun);
+    uiButton(pauseHits, btnX(3, 1), BTN_Y, BTN_W, BTN_H, 'C — EDIT DEV', '#8a63ff', () => openSetup('play'));
+    uiButton(pauseHits, btnX(3, 2), BTN_Y, BTN_W, BTN_H, '? — HELP', '#7fe0ff', () => openHelp('play'));
+    if (armed) {
+      ctx.textAlign = 'center';
+      ctx.font = '7px monospace';
+      ctx.fillStyle = '#ff5a6e';
+      ctx.fillText('this run ends here — it scores nothing', VW / 2, BTN_Y - 6);
+    }
   }
 
   if (state === 'over') drawGameOver();
@@ -2644,14 +3222,28 @@ function drawBossTells(e, ex, ey, w, h) {
     ctx.strokeRect(cx - 3.5, Math.round(e.y) - 3.5, 7, 7);
     if (!e.open) { ctx.strokeStyle = '#5a6a90'; ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5); }
   }
-  if (e.boss === 'screep' && e.grown < e.growCap) {
-    // the growth clock, on the card: green while your fire is holding it, red
-    // and draining while it isn't. It's the only thing you control here.
-    const held = e.lastHitT <= CREEP_GRACE;
+  if (e.boss === 'screep') {
+    // every attachment draws its tether, so "that ticket is part of the boss"
+    // is visible rather than something you infer from bullets not landing
+    const shielded = scopeAttached(e);
+    for (const s of e.scope) {
+      if (!enemies.includes(s)) continue;
+      ctx.strokeStyle = 'rgba(255,143,160,0.55)';
+      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(s.x, s.y); ctx.stroke();
+    }
+    if (shielded) {
+      ctx.strokeStyle = '#ff8fa0';
+      ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
+    } else {
+      // the window, flashing: this is the only time letters land on it
+      ctx.strokeStyle = Math.floor(t * 10) % 2 === 0 ? '#3fe08a' : '#ffd23f';
+      ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
+    }
+    // the clock to the next attachment, on the card
     ctx.fillStyle = '#080c18';
     ctx.fillRect(e.x - 8, ey - 5, 16, 2);
-    ctx.fillStyle = held ? '#3fe08a' : '#ff5a6e';
-    ctx.fillRect(e.x - 8, ey - 5, held ? 16 : Math.round(16 * clamp(e.growT / cad(e, 3), 0, 1)), 2);
+    ctx.fillStyle = shielded ? '#ff5a6e' : '#3fe08a';
+    ctx.fillRect(e.x - 8, ey - 5, Math.round(16 * clamp(e.growT / cad(e, SCOPE_GROW), 0, 1)), 2);
   }
   if (e.boss === 'monolith' && e.traceWind > 0) {
     // the trace it is winding up to throw: a ring growing out to where the
@@ -2691,13 +3283,36 @@ function drawBossTells(e, ex, ey, w, h) {
       ctx.strokeStyle = rebasing(e) ? 'rgba(255,210,63,0.75)' : 'rgba(63,224,138,0.35)';
       ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.twin.x, e.twin.y); ctx.stroke();
     }
+    // feature branches: a dashed tether, deliberately unlike the solid trunk
+    // link, so "cut from this side" reads at a glance
+    ctx.save();
+    ctx.setLineDash([2, 3]);
+    ctx.strokeStyle = 'rgba(127,224,255,0.6)';
+    for (const f of e.feat) {
+      if (!enemies.includes(f)) continue;
+      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(f.x, f.y); ctx.stroke();
+    }
+    ctx.restore();
+    // which trunk this is, and whether it still has branches to close
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 8px monospace';
+    ctx.fillStyle = e.clean ? '#3fe08a' : '#7fe0ff';
+    ctx.fillText(e.branch || 'main', cx, ey - 6);
+    if (e.clean) {
+      ctx.font = '7px monospace';
+      ctx.fillStyle = '#3fe08a';
+      ctx.fillText('CLEAN', cx, ey - 14);
+    }
     if (e.reviveT > 0) { // the window to finish the other side, at double damage
       ctx.strokeStyle = Math.floor(t * 10) % 2 === 0 ? '#ffd23f' : '#3fe08a';
       ctx.strokeRect(ex - 3.5, ey - 3.5, w + 7, h + 7);
-      ctx.textAlign = 'center';
       ctx.font = 'bold 8px monospace';
       ctx.fillStyle = '#ffd23f';
-      ctx.fillText(e.reviveT.toFixed(1) + 's', cx, ey - 6);
+      ctx.fillText(e.reviveT.toFixed(1) + 's', cx, ey - 16);
+    }
+    if (featuresOpen()) { // why letters are bouncing off both trunks
+      ctx.strokeStyle = '#7fe0ff';
+      ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
     }
   }
 }
@@ -2851,11 +3466,22 @@ function drawHud() {
     ctx.fillText(s, lx, VH - 25);
     lx += ctx.measureText(s).width + 8;
   }
-  // assist toggles (lit teal when on)
-  ctx.fillStyle = autoAim ? '#2fe4c8' : '#5a6a90';
-  ctx.fillText('[I] AUTO-AIM', 6, VH - 15);
-  ctx.fillStyle = autoShoot ? '#2fe4c8' : '#5a6a90';
-  ctx.fillText('[O] AUTO-SHOOT', 6, VH - 5);
+  // assist toggles (lit teal when on) — struck out entirely where the
+  // difficulty forbids them, so the keys aren't advertised as available
+  const d = curDiff();
+  if (d.assists) {
+    ctx.fillStyle = autoAim ? '#2fe4c8' : '#5a6a90';
+    ctx.fillText('[I] AUTO-AIM', 6, VH - 15);
+    ctx.fillStyle = autoShoot ? '#2fe4c8' : '#5a6a90';
+    ctx.fillText('[O] AUTO-SHOOT', 6, VH - 5);
+  } else {
+    ctx.fillStyle = '#3a2f57';
+    ctx.fillText('NO ASSISTS', 6, VH - 5);
+  }
+  // which sprint you signed up for — invisible otherwise once the run starts
+  ctx.textAlign = 'right';
+  ctx.fillStyle = d.color;
+  ctx.fillText(d.name, VW - 6, VH - 5);
 }
 
 function drawMenu() {
@@ -2869,7 +3495,7 @@ function drawMenu() {
   ctx.translate(cx, cy - 84);
   ctx.rotate(menuT * 1.2);
   ctx.scale(2, 2);
-  ctx.drawImage(devImg, -17, -17);
+  ctx.drawImage(devSprite(), -17, -17);
   ctx.restore();
 
   ctx.textAlign = 'center';
@@ -2897,13 +3523,29 @@ function drawMenu() {
 
   // bottom-right: forward to the next page (create-your-dev)
   ctx.font = 'bold 10px monospace';
-  uiButton(menuHits, VW - 132, VH - 34, 120, 24, 'CREATE DEV ›', '#3fe08a', () => openSetup('menu'));
+  uiButton(menuHits, btnX(5, 0), BTN_Y, BTN_W, BTN_H, '? — HELP', '#7fe0ff', () => openHelp('menu'));
+  uiButton(menuHits, btnX(5, 1), BTN_Y, BTN_W, BTN_H, fsOn() ? 'F — WINDOWED' : 'F — FULLSCREEN', '#8a63ff', toggleFullscreen);
+  uiButton(menuHits, btnX(5, 2), BTN_Y, BTN_W, BTN_H, 'G — PIXELS: ' + (hiRes ? 'SMALL' : 'BIG'), '#2fe4c8', () => setHiRes(!hiRes));
+  uiButton(menuHits, btnX(5, 3), BTN_Y, BTN_W, BTN_H, 'DEBUG — ' + (debugMode ? 'ON' : 'OFF'),
+    debugMode ? '#3fe08a' : '#5a6a90', () => { debugMode = !debugMode; });
+  uiButton(menuHits, btnX(5, 4), BTN_Y, BTN_W, BTN_H, 'CREATE DEV ›', '#3fe08a', () => openSetup('menu'));
 
-  drawDebugToggle(cx, 330); // the debug slider lives at the bottom of the title screen
+  if (debugMode) {
+    ctx.textAlign = 'center';
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#5a6a90';
+    ctx.fillText('pause (P) in-game to jump to any sprint', cx, BTN_Y - 8);
+  }
 }
 
 // A bordered button that registers its own click target. The caller sets the
 // font first; `hits` is the list to push the target onto (menuHits, etc.).
+// One button size for the whole UI, taken from the setup screen's FREEZE SPIN.
+// Six screens had grown five different sizes between them; this is the only one
+// now, so a row is laid out by index instead of by hand-counted pixels.
+const BTN_W = 110, BTN_H = 16, BTN_Y = VH - 26, BTN_GAP = 8;
+const btnX = (n, i) => Math.round((VW - (n * BTN_W + (n - 1) * BTN_GAP)) / 2 + i * (BTN_W + BTN_GAP));
+
 function uiButton(hits, x, y, w, h, label, fg, act) {
   ctx.fillStyle = 'rgba(8,12,24,0.85)';
   ctx.fillRect(x, y, w, h);
@@ -2913,51 +3555,6 @@ function uiButton(hits, x, y, w, h, label, fg, act) {
   ctx.fillStyle = fg;
   ctx.fillText(label, x + w / 2, y + h / 2 + 3);
   hits.push({ x, y, w, h, act });
-}
-
-// A rounded pill path (for the classic on/off slider track).
-function pill(x, y, w, h) {
-  const r = h / 2;
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-// The title-screen debug switch. On → pausing shows a level jumper (see
-// drawDebugLevels) for tuning boss difficulty. Registers one generous tap
-// target over label + switch so a finger works as well as a mouse.
-function drawDebugToggle(cx, y) {
-  const tw = 26, th = 12, on = debugMode;
-  const tx = Math.round(cx - tw / 2);
-
-  ctx.textAlign = 'right';
-  ctx.font = 'bold 8px monospace';
-  ctx.fillStyle = on ? '#3fe08a' : '#5a6a90';
-  ctx.fillText('DEBUG', tx - 8, y + th - 3);
-
-  pill(tx, y, tw, th);
-  ctx.fillStyle = on ? 'rgba(63,224,138,0.30)' : 'rgba(90,106,144,0.25)';
-  ctx.fill();
-  ctx.strokeStyle = on ? '#3fe08a' : '#5a6a90';
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.arc(on ? tx + tw - th / 2 : tx + th / 2, y + th / 2, th / 2 - 1.5, 0, TAU);
-  ctx.fillStyle = on ? '#3fe08a' : '#8f8fa8';
-  ctx.fill();
-
-  if (on) {
-    ctx.textAlign = 'center';
-    ctx.font = '8px monospace';
-    ctx.fillStyle = '#5a6a90';
-    ctx.fillText('pause (P) in-game to jump to any sprint', cx, y + th + 12);
-  }
-
-  menuHits.push({ x: tx - 48, y: y - 8, w: 48 + tw + 10, h: th + 16, act: () => { debugMode = !debugMode; } });
 }
 
 // The left-hand level jumper drawn over the pause screen when debug is on.
@@ -3004,7 +3601,7 @@ function jumpToSprint(n) {
   deadlineT = 0; backlog = [];
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   clearMsg = '';
-  player.maxHp = 3 + Math.floor((n - 1) / 8); // one promotion per 2nd boss cleared before now
+  player.maxHp = curDiff().cups + Math.floor((n - 1) / 8); // one promotion per 2nd boss cleared before now
   player.hp = player.maxHp;
   player.x = VW / 2; player.y = VH / 2; player.vx = 0; player.vy = 0;
   player.invuln = 1; player.rapidT = 0; player.duckT = 0;
@@ -3076,7 +3673,7 @@ function drawSetup() {
   ctx.translate(lx, 306);
   ctx.rotate(devAngle);
   ctx.scale(2, 2);
-  ctx.drawImage(devImg, -17, -17);
+  ctx.drawImage(devSprite(), -17, -17);
   ctx.restore();
   ctx.textAlign = 'center';
   ctx.font = '8px monospace';
@@ -3127,7 +3724,9 @@ function drawSetup() {
     setupHits.push({ x, y, w, h, act });
   };
   ctx.font = 'bold 10px monospace';
-  btn(236, 208, 396, 24, 'TAB — RANDOMIZE', '#8a63ff', randomizeLook);
+  // left edge on the swatch column (chipX, not the labels), so it lines up with
+  // the rectangles it randomizes
+  btn(chipX, 208, BTN_W, BTN_H, 'TAB — RANDOMIZE', '#8a63ff', randomizeLook);
 
   ctx.textAlign = 'center';
   ctx.font = '8px monospace';
@@ -3146,8 +3745,412 @@ function drawSetup() {
   // page navigation: bottom-left back to the welcome screen, bottom-right into
   // the game — mirrors the title screen's forward button
   ctx.font = 'bold 10px monospace';
-  btn(8, VH - 34, 68, 24, '‹ BACK', '#5a6a90', closeSetup);
-  btn(VW - 108, VH - 34, 96, 24, editing ? 'RESUME ›' : 'PLAY ›', '#3fe08a', confirmSetup);
+  btn(btnX(3, 0), BTN_Y, BTN_W, BTN_H, '‹ BACK', '#5a6a90', closeSetup);
+  // no H key here — every printable key is name text on this screen — so the
+  // button is the only way in, and help must be reachable from every page
+  btn(btnX(3, 1), BTN_Y, BTN_W, BTN_H, '? HELP', '#7fe0ff', () => openHelp('setup'));
+  btn(btnX(3, 2), BTN_Y, BTN_W, BTN_H, editing ? 'RESUME ›' : 'NEXT ›', '#3fe08a', confirmSetup);
+}
+
+// The stat sheet, in the order a player cares about. Everything is shown as
+// "more of this thing" relative to NORMAL, so a bigger number always reads as
+// worse for you — which is why SWARM and BOSS are inverted here: the stored
+// values are intervals (smaller = more often), and nobody reads an interval.
+const mulTag = (v) => '×' + (Math.round(v * 100) / 100);
+const DIFF_COLS = [
+  { label: 'CUPS',  val: (d) => String(d.cups) },
+  { label: 'WRONG', val: (d) => mulTag(d.off) },
+  { label: 'CLOCK', val: (d) => mulTag(d.dead) },
+  { label: 'SWARM', val: (d) => mulTag(1 / d.dens) },
+  { label: 'SPEED', val: (d) => mulTag(d.speed) },
+  { label: 'BOSS',  val: (d) => mulTag(1 / d.cad) },
+  { label: 'SP',    val: (d) => mulTag(d.sp) },
+];
+
+function drawDiff() {
+  ctx.fillStyle = 'rgba(8,12,24,0.78)';
+  ctx.fillRect(0, 0, VW, VH);
+  diffHits.length = 0;
+  const cx = VW / 2;
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = '#080c18'; ctx.fillText('HOW BAD IS THIS SPRINT?', cx + 1, 19);
+  ctx.fillStyle = '#ffd23f'; ctx.fillText('HOW BAD IS THIS SPRINT?', cx, 18);
+  ctx.font = '8px monospace';
+  ctx.fillStyle = '#8f8fa8';
+  ctx.fillText('↑↓ pick  ·  ENTER to clock in  ·  every number is relative to NORMAL', cx, 30);
+
+  const rx = 16, rw = VW - 32, sx = 216, colW = (VW - 24 - sx) / DIFF_COLS.length;
+
+  // column headings, written once above the rows
+  ctx.font = '7px monospace';
+  ctx.fillStyle = '#5a6a90';
+  for (let c = 0; c < DIFF_COLS.length; c++) ctx.fillText(DIFF_COLS[c].label, sx + colW * (c + 0.5), 44);
+
+  for (let i = 0; i < DIFFS.length; i++) {
+    const d = DIFFS[i], y = 48 + i * 52, h = 46;
+    const on = i === diffIdx, open = diffUnlocked(d);
+
+    ctx.globalAlpha = open ? 1 : 0.45;
+    ctx.fillStyle = on ? 'rgba(58,47,87,0.55)' : 'rgba(8,12,24,0.85)';
+    ctx.fillRect(rx, y, rw, h);
+    ctx.strokeStyle = on ? '#ffd23f' : open ? d.color : '#3a2f57';
+    ctx.strokeRect(rx + 0.5, y + 0.5, rw - 1, h - 1);
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = open ? d.color : '#5a6a90';
+    ctx.fillText(d.name, rx + 22, y + 20);
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#8f8fa8';
+    ctx.fillText(open ? d.tag : 'LOCKED — see below', rx + 22, y + 34);
+    if (on) { ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 10px monospace'; ctx.fillText('>', rx + 8, y + 21); }
+
+    ctx.textAlign = 'center';
+    ctx.font = '9px monospace';
+    for (let c = 0; c < DIFF_COLS.length; c++) {
+      const v = DIFF_COLS[c].val(d);
+      // dim anything identical to NORMAL — what's left is what actually changed
+      ctx.fillStyle = !open ? '#5a6a90' : v === DIFF_COLS[c].val(DIFFS[1]) ? '#5a6a90' : d.color;
+      ctx.fillText(v, sx + colW * (c + 0.5), y + 27);
+    }
+    if (!d.assists) {
+      ctx.font = '7px monospace';
+      ctx.fillStyle = '#8f8fa8';
+      ctx.textAlign = 'right';
+      ctx.fillText('NO AUTO-AIM / AUTO-SHOOT', rx + rw - 6, y + 41);
+    }
+    ctx.globalAlpha = 1;
+
+    diffHits.push({ x: rx, y, w: rw, h, act: () => pickDiff(i) });
+  }
+
+  // the unlock strip: what CLAUDELIKE costs, and how far along you are
+  const done = BOSSES.filter((b) => bossesDown.has(b.type)).length;
+  const unlocked = allBossesDown();
+  const nagging = menuT - diffDenied < 1.2 && Math.floor(menuT * 6) % 2 === 0;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 8px monospace';
+  const onLoan = !unlocked && debugMode; // open for testing, not earned
+  ctx.fillStyle = unlocked ? '#8a63ff' : onLoan ? '#ff8a5c' : nagging ? '#ff5a6e' : '#8f8fa8';
+  ctx.fillText(unlocked
+    ? 'CLAUDELIKE UNLOCKED — you resolved all six on HARD'
+    : onLoan
+      ? 'CLAUDELIKE OPEN FOR TESTING (DEBUG) — not earned yet: ' + done + '/6'
+      : 'CLAUDELIKE unlocks when all six bosses are resolved on HARD — ' + done + '/6', cx, 268);
+
+  // one chip per boss, lit in its own colour once that one has gone down
+  ctx.font = '7px monospace';
+  let tw = 0;
+  const cw = BOSSES.map((b) => Math.round(ctx.measureText(b.short).width) + 10);
+  for (const w of cw) tw += w + 3;
+  let bxp = Math.round(cx - (tw - 3) / 2);
+  for (let i = 0; i < BOSSES.length; i++) {
+    const b = BOSSES[i], got = bossesDown.has(b.type);
+    ctx.fillStyle = got ? 'rgba(58,47,87,0.55)' : 'rgba(8,12,24,0.85)';
+    ctx.fillRect(bxp, 276, cw[i], 14);
+    ctx.strokeStyle = got ? b.color : '#2a3048';
+    ctx.strokeRect(bxp + 0.5, 276.5, cw[i] - 1, 13);
+    ctx.fillStyle = got ? b.color : '#3a2f57';
+    ctx.fillText(b.short, bxp + cw[i] / 2, 286);
+    bxp += cw[i] + 3;
+  }
+  // The two ways a boss kill silently fails to count, said before you go and
+  // spend a run finding out. The debug line only appears when it applies.
+  if (!unlocked) {
+    ctx.textAlign = 'center';
+    ctx.font = '7px monospace';
+    ctx.fillStyle = debugMode ? '#ff8a5c' : '#5a6a90';
+    ctx.fillText(debugMode
+      ? 'a debug run never logs a boss — switch DEBUG off on the title screen to earn it'
+      : 'kills on EASY or NORMAL don\'t count, and neither do debug runs', cx, 300);
+  }
+
+  ctx.font = 'bold 10px monospace';
+  uiButton(diffHits, btnX(3, 0), BTN_Y, BTN_W, BTN_H, '‹ BACK', '#5a6a90', () => openSetup('menu'));
+  uiButton(diffHits, btnX(3, 1), BTN_Y, BTN_W, BTN_H, '? HELP', '#7fe0ff', () => openHelp('diff'));
+  uiButton(diffHits, btnX(3, 2), BTN_Y, BTN_W, BTN_H, 'PLAY ›', '#3fe08a', startGame);
+}
+
+// ---------------------------------------------------------------- help
+// Everything the game teaches through play, written down — reachable from the
+// title, the difficulty screen and the pause overlay, so you can look something
+// up mid-run without dying for it. Paged rather than scrolled: a 640×360 canvas
+// has no scrollbar affordance, and pages give phones something to tap.
+// Bosses are deliberately absent; they are the part you're meant to meet cold.
+const helpHits = [];
+let helpPage = 0, helpReturn = 'menu', helpShownAt = 0;
+
+// ---------------------------------------------------------------- leaving a run
+// Abandoning drops you on the difficulty screen rather than the title: changing
+// difficulty is the whole reason to quit mid-run, and BACK from there still
+// walks out to the customizer and the title, so nothing is cut off.
+// The run is discarded — no score is submitted, the same as any unfinished
+// sprint — so it asks twice. On a phone this button sits a thumb-width from
+// RESUME, and one stray tap must not be able to bin a good run.
+const overHits = [];
+let quitArm = -9;
+const quitArmed = () => menuT - quitArm < 2.5;
+
+function quitRun() {
+  if (!quitArmed()) { quitArm = menuT; sfx.block(); return; }
+  quitArm = -9;
+  paused = false;
+  mouse.down = false;
+  openDiff();
+}
+
+function openHelp(from) {
+  helpReturn = from || 'menu';
+  helpShownAt = menuT;
+  state = 'help';
+}
+function closeHelp() { state = helpReturn; helpReturn = 'menu'; }
+
+function helpKey(e) {
+  const k = e.key;
+  if (k === 'Escape' || k === 'Enter' || k === ' ' || k.toLowerCase() === 'h') { closeHelp(); return; }
+  if (k === 'ArrowLeft' || k === 'ArrowUp') helpPage = (helpPage + HELP_PAGES.length - 1) % HELP_PAGES.length;
+  if (k === 'ArrowRight' || k === 'ArrowDown') helpPage = (helpPage + 1) % HELP_PAGES.length;
+}
+
+// One text row. Returns the next baseline, so a page reads as a straight list
+// instead of a pile of hand-counted y values.
+function hRow(txt, x, y, color, font) {
+  ctx.textAlign = 'left';
+  ctx.font = font || '8px monospace';
+  ctx.fillStyle = color || '#b9c4dd';
+  ctx.fillText(txt, x, y);
+  return y + 11;
+}
+// A key/action pair, the key right-aligned into its own column.
+function hKey(key, what, y) {
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 8px monospace';
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillText(key, 250, y);
+  return hRow(what, 262, y, '#b9c4dd');
+}
+// An icon in a fixed gutter with a heading and a line of description beside it,
+// so every bestiary row lines up whatever the sprite's natural size is.
+function hEntry(img, name, nameColor, lines, y, scale) {
+  const s = scale || 1;
+  const w = img.width * s, h = img.height * s;
+  ctx.drawImage(img, 0, 0, img.width, img.height, Math.round(60 - w / 2), Math.round(y - h / 2), w, h);
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 9px monospace';
+  ctx.fillStyle = nameColor;
+  ctx.fillText(name, 84, y - 3);
+  ctx.font = '7px monospace';
+  ctx.fillStyle = '#8f8fa8';
+  let ly = y + 7;
+  for (const l of lines) { ctx.fillText(l, 84, ly); ly += 8; }
+}
+
+function helpControls() {
+  let y = 62;
+  y = hKey('ARROWS', 'scoot the chair — it drifts, office-chair physics', y);
+  y = hKey('A / D', 'spin the chair; hold both at once to lock your facing', y);
+  y = hKey('SPACE', 'ship code — hold for the full letter stream', y);
+  y = hKey('CLICK / TAP', 'also fires, along your current facing', y);
+  y = hKey('1 / 2 / 3', 'switch language — see LANGUAGES & STRIPES', y);
+  y = hKey('I / O', 'auto-aim / auto-shoot. Score earned with either is ×0.6', y);
+  y = hKey('P / ESC', 'pause, and read the standup board', y);
+  y = hKey('C', 'while paused: edit your dev, then straight back in', y);
+  y = hKey('H', 'this page — from the title, difficulty or pause screen', y);
+  y = hKey('F', 'fullscreen', y);
+  y = hKey('G', 'pixel size — BIG is chunky, SMALL is easier to read', y);
+  y = hKey('M', 'mute', y);
+  y = hKey('R', 'restart after burnout', y);
+  y += 6;
+  hRow('Everything here is also a button. The whole game is playable by tap.', 60, y, '#5a6a90', '7px monospace');
+}
+
+function helpSprint() {
+  let y = 60;
+  y = hRow('Every regular sprint runs on a standup deadline. Clear the board', 24, y);
+  y = hRow('before it hits and you bank the full clear bonus. Let it run out and', 24, y);
+  y = hRow('the sprint ends anyway — but nothing is cleared for free.', 24, y);
+  y += 6;
+  y = hRow('OVERFLOW — WHAT DIDN\'T GET DONE', 24, y, '#ff8a5c', 'bold 8px monospace');
+  y = hRow('Whatever is still alive when the clock runs out — plus anything that', 24, y);
+  y = hRow('never got to spawn — is swept into three holding pens, one per area,', 24, y);
+  y = hRow('on the edge that area\'s language fires from:', 24, y);
+  y += 2;
+
+  // the three pens, drawn where they actually sit — faster to read than a list
+  const bx = 250, by = y, bw = 140, bh = 64;
+  ctx.strokeStyle = '#2a3048';
+  ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+  ctx.fillStyle = AREAS.fe.color;    ctx.fillRect(bx + 3, by + 14, 5, bh - 28);
+  ctx.fillStyle = AREAS.be.color;    ctx.fillRect(bx + 34, by + 3, bw - 68, 5);
+  ctx.fillStyle = AREAS.infra.color; ctx.fillRect(bx + bw - 8, by + 14, 5, bh - 28);
+  ctx.textAlign = 'center';
+  ctx.font = '7px monospace';
+  ctx.fillStyle = AREAS.be.color; ctx.fillText('BACKEND', bx + bw / 2, by + 17);
+  ctx.fillStyle = AREAS.fe.color; ctx.fillText('FE', bx + 16, by + bh / 2);
+  ctx.fillStyle = AREAS.infra.color; ctx.fillText('INFRA', bx + bw - 22, by + bh / 2);
+  y += bh + 10;
+
+  y = hRow('They rattle there through the countdown, then all three pens open at', 24, y);
+  y = hRow('once as the next sprint starts — on top of that sprint\'s own tickets.', 24, y);
+  y = hRow('Carried-over work comes back ENRAGED: 50% faster, red, worth ×1.5 SP.', 24, y, '#ff5a6e');
+  y = hRow('Timing out pays only a third of the clear bonus.', 24, y);
+  y += 4;
+  y = hRow('Before a boss the pens stay shut and wait one more sprint — a boss', 24, y, '#8f8fa8', '7px monospace');
+  y = hRow('sprint has no clock. The backlog caps at 24; past that the oldest rot', 24, y, '#8f8fa8', '7px monospace');
+  y = hRow('out as won\'t-fix, so one bad sprint can\'t snowball into a wall.', 24, y, '#8f8fa8', '7px monospace');
+}
+
+function helpPickups() {
+  let y = 58;
+  y = hRow('Coffee cups are your health — top left of the screen. There is no', 24, y);
+  y = hRow('passive regen, so a cup you lose is gone until something refills it.', 24, y);
+  y = hRow('Every 2nd boss cleared is a PROMOTION: +1 maximum cup, poured full.', 24, y, '#ffd23f');
+  y += 10;
+  hEntry(coffeeImg, 'COFFEE — REFILL', '#dfe6ff', ['Pours one cup back. The only healing in the game.'], y + 8, 2);
+  hEntry(canImg, 'ENERGY DRINK — CRUNCH MODE', '#2fe4c8', ['Double fire rate for 8 seconds.'], y + 44, 2);
+  hEntry(duckImg, 'RUBBER DUCK — SHIELD', '#ffd23f', ['3 seconds where nothing can touch you.'], y + 80, 2);
+  y += 112;
+  y = hRow('Tickets drop these rarely — roughly one in twenty kills. A boss always', 24, y, '#8f8fa8', '7px monospace');
+  hRow('drops all three, and a later lap of the same boss pours a second cup.', 24, y, '#8f8fa8', '7px monospace');
+}
+
+function helpLangs() {
+  let y = 56;
+  y = hRow('Every ticket belongs to an area, shown as the coloured header across', 24, y);
+  y = hRow('its top edge. Your letters have a language, and it has to match.', 24, y);
+  y += 8;
+
+  for (let i = 0; i < LANGS.length; i++) {
+    const L = LANGS[i], ry = y + i * 22;
+    ctx.fillStyle = L.color;
+    ctx.fillRect(30, ry - 8, 10, 12);
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 9px monospace';
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillText(String(i + 1), 48, ry + 1);
+    ctx.fillStyle = L.color;
+    ctx.fillText(L.name, 62, ry + 1);
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#b9c4dd';
+    ctx.fillText({ fe: 'Frontend tickets', be: 'Backend tickets', infra: 'Infrastructure tickets' }[L.area], 124, ry + 1);
+  }
+  y += LANGS.length * 22 + 6;
+
+  y = hRow('MATCHING THE STRIPE = ×2 DAMAGE', 24, y, '#3fe08a', 'bold 9px monospace');
+  y = hRow('A mismatch still does something, but how much is set by the', 24, y);
+  y = hRow('difficulty you picked: ×1 on NORMAL, down to ×0.5 on CLAUDELIKE.', 24, y);
+  y = hRow('Epics and bosses take half of that again — against those, switching', 24, y);
+  y = hRow('language is the only real answer.', 24, y);
+  y += 4;
+  hRow('An Epic passes its colour to the Stories it splits into.', 24, y, '#8f8fa8', '7px monospace');
+
+  // A ticket with its stripe called out — blown up ×4, because at the size it
+  // actually appears in-game the stripe is the very thing you can't see yet.
+  const img = ENEMY_TYPES.story.img, S = 4;
+  const sw = img.width * S, sh = img.height * S;
+  const tx = 500 - sw / 2, ty = 150;
+  ctx.drawImage(img, 0, 0, img.width, img.height, tx, ty, sw, sh);
+  // deliberately INFRA blue: the Story card's own art is green, so a green
+  // stripe here would blend into it and demonstrate nothing
+  ctx.fillStyle = AREAS.infra.color;
+  ctx.fillRect(tx + S, ty + S, sw - 2 * S, STRIPE_W * S);
+  // leader drops straight down into the header band it names
+  ctx.strokeStyle = '#ffd23f';
+  ctx.beginPath();
+  ctx.moveTo(tx + sw / 2, ty - 8); ctx.lineTo(tx + sw / 2, ty + STRIPE_W * S);
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 7px monospace';
+  ctx.fillStyle = '#ffd23f';
+  // named from the table, never typed here — renaming a language must not be
+  // able to leave a stale name sitting in the help page
+  ctx.fillText('blue header —', tx + sw / 2, ty - 26);
+  ctx.fillText('hit it with ' + LANGS.find((l) => l.area === 'infra').name, tx + sw / 2, ty - 18);
+}
+
+function helpTickets() {
+  const T = ENEMY_TYPES;
+  hEntry(T.bug.img, 'BUG', AREAS.fe.color,
+    ['Small, fast, erratic. 2 HP. Comes in all three colours.'], 60, 2);
+  hEntry(T.story.img, 'STORY', AREAS.be.color,
+    ['Bigger, walks a straight line at you. 5 HP.'], 96, 1.6);
+  hEntry(T.epic.img, 'EPIC', '#c9a8ff',
+    ['Big and slow, 15 HP. Splits into Stories when it dies,',
+     'and they inherit its colour. Resists off-language letters.'], 136, 1);
+  hEntry(T.hotfix.img, 'HOTFIX', '#ff8a5c',
+    ['Screams in at nearly four times a Story\'s speed. Only 3 HP,',
+     'but no wind-up — the siren IS the telegraph. Burns out on impact.'], 180, 2);
+  // the invite is drawn at ×2 in the game, so ×1 here would undersell it
+  hEntry(T.meeting.img, 'MEETING INVITE', '#b9c4dd',
+    ['Infinite HP — your letters bounce off it. It doesn\'t hunt you,',
+     'it drifts across the room. Not a target. Get out of its way.'], 224, 2.5);
+  hEntry(T.story.img, 'BLOCKED STORY', '#7fe0ff',
+    ['Shielded, and linked by a line to a blocker Bug escorting it.',
+     'It takes NOTHING until you resolve the blocker — kill that first.',
+     'Cut back the other way and the escort has to swing the long way round.'], 274, 1.6);
+
+  // the pair, drawn as it actually arrives
+  const px = 470, py = 262;
+  ctx.strokeStyle = 'rgba(127,224,255,0.5)';
+  ctx.beginPath(); ctx.moveTo(px + 6, py + 8); ctx.lineTo(px + 44, py + 8); ctx.stroke();
+  ctx.drawImage(ENEMY_TYPES.story.img, px, py);
+  ctx.strokeStyle = '#7fe0ff';
+  ctx.strokeRect(px - 1.5, py - 1.5, ENEMY_TYPES.story.img.width + 3, ENEMY_TYPES.story.img.height + 3);
+  ctx.drawImage(ENEMY_TYPES.bug.img, px + 40, py + 3);
+
+  // "kill this one" is wider than the gap between the two cards, so on its own
+  // it sits under BOTH of them and names neither — which is exactly the
+  // confusion this whole entry exists to clear up. The arrow does the naming.
+  const bugCx = px + 44, tip = py + 15;   // bug is 8 wide at px+40, 10 tall from py+3
+  ctx.strokeStyle = '#ffd23f';
+  ctx.beginPath();
+  ctx.moveTo(bugCx, py + 30);
+  ctx.lineTo(bugCx, tip);
+  ctx.moveTo(bugCx - 3, tip + 4); ctx.lineTo(bugCx, tip); ctx.lineTo(bugCx + 3, tip + 4);
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 7px monospace';
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillText('kill this one', bugCx, py + 39);
+}
+
+const HELP_PAGES = [
+  { title: 'CONTROLS', draw: helpControls },
+  { title: 'THE SPRINT', draw: helpSprint },
+  { title: 'CUPS & PICKUPS', draw: helpPickups },
+  { title: 'LANGUAGES & STRIPES', draw: helpLangs },
+  { title: 'THE TICKETS', draw: helpTickets },
+];
+
+function drawHelp() {
+  ctx.fillStyle = 'rgba(8,12,24,0.92)';
+  ctx.fillRect(0, 0, VW, VH);
+  helpHits.length = 0;
+  const page = HELP_PAGES[helpPage];
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillStyle = '#080c18'; ctx.fillText(page.title, VW / 2 + 1, 21);
+  ctx.fillStyle = '#ffd23f'; ctx.fillText(page.title, VW / 2, 20);
+  ctx.fillStyle = '#2a3048';
+  ctx.fillRect(24, 27, VW - 48, 1);
+
+  page.draw();
+
+  // one pip per page, above the pager row
+  for (let i = 0; i < HELP_PAGES.length; i++) {
+    const px = Math.round(VW / 2 - (HELP_PAGES.length * 14) / 2 + i * 14);
+    ctx.fillStyle = i === helpPage ? '#ffd23f' : '#3a2f57';
+    ctx.fillRect(px, BTN_Y - 12, 8, 6);
+    helpHits.push({ x: px - 3, y: BTN_Y - 16, w: 14, h: 14, act: () => { helpPage = i; } });
+  }
+  ctx.font = 'bold 10px monospace';
+  uiButton(helpHits, btnX(3, 0), BTN_Y, BTN_W, BTN_H, '‹ PREV', '#7fe0ff', () => { helpPage = (helpPage + HELP_PAGES.length - 1) % HELP_PAGES.length; });
+  uiButton(helpHits, btnX(3, 1), BTN_Y, BTN_W, BTN_H, 'ESC — CLOSE', '#3fe08a', closeHelp);
+  uiButton(helpHits, btnX(3, 2), BTN_Y, BTN_W, BTN_H, 'NEXT ›', '#7fe0ff', () => { helpPage = (helpPage + 1) % HELP_PAGES.length; });
 }
 
 function drawGameOver() {
@@ -3184,7 +4187,19 @@ function drawGameOver() {
     ctx.textAlign = 'center';
     ctx.font = 'bold 10px monospace';
     ctx.fillStyle = '#3fe08a';
-    ctx.fillText('PRESS R TO GRAB ANOTHER COFFEE', cx, y + 26);
+    // the board can be up to 12 rows tall, so this yields to the button row
+    ctx.fillText('PRESS R TO GRAB ANOTHER COFFEE', cx, Math.min(y + 26, VH - 40));
+  }
+
+  // Dying used to be the only way out of a run, and it still only offered the
+  // same run again — no way back to the difficulty screen or the title without
+  // reloading the page. All three ways on are here now.
+  overHits.length = 0;
+  if (overTimer > 0.8) {
+    ctx.font = 'bold 10px monospace';
+    uiButton(overHits, btnX(3, 0), BTN_Y, BTN_W, BTN_H, '‹ TITLE', '#5a6a90', () => { state = 'menu'; });
+    uiButton(overHits, btnX(3, 1), BTN_Y, BTN_W, BTN_H, 'R — AGAIN', '#3fe08a', startGame);
+    uiButton(overHits, btnX(3, 2), BTN_Y, BTN_W, BTN_H, 'DIFFICULTY ›', '#7fe0ff', () => openDiff());
   }
 }
 

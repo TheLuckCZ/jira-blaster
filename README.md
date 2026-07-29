@@ -18,9 +18,29 @@ python3 -m http.server 8000   # → http://localhost:8000
 
 ## Controls
 
-Keyboard-first; the customizer and the title/burnout screens also take a click
-or a tap. The title screen leads to **CREATE YOUR DEV**: name at the top, the
-dev below it, the eight appearance rows beside them.
+Keyboard-first; every screen also takes a click or a tap. Buttons are one
+standard size everywhere (`BTN_W`/`BTN_H`, taken from the setup screen's
+FREEZE SPIN) and rows are laid out by index with `btnX(n, i)` rather than
+hand-counted pixels, so adding a button re-centres the row instead of shifting
+its neighbours into each other. The run is three
+pages: title → **CREATE YOUR DEV** (name at the top, the dev below it, the eight
+appearance rows beside them) → **HOW BAD IS THIS SPRINT?** (the difficulty) →
+sprint 1.
+
+Every screen goes both ways, and none is a dead end:
+
+```
+title ──► create your dev ──► difficulty ──► RUN ──► burnout
+  ◄────────────┘      ◄────────────┘         │        │
+                                             │        ├──► R: same again
+  help ◄── ? on every screen (H where        │        ├──► D: difficulty
+           typing can't swallow the key)     │        └──► ESC: title
+                                             └──► pause: resume · edit dev · Q quit ─► difficulty
+```
+
+Quitting mid-run lands on the **difficulty** screen rather than the title,
+because changing difficulty is the reason to quit — and BACK from there still
+walks out through the customizer to the title, so nothing is cut off.
 
 | Input | Action on the customizer |
 | --- | --- |
@@ -28,9 +48,17 @@ dev below it, the eight appearance rows beside them.
 | ↑ / ↓ | Move between appearance rows |
 | ← / → | Change the selected option (wraps) |
 | TAB | Randomize the whole look |
-| ENTER | Start sprint 1 — or, mid-run, back into the fight wearing the changes |
+| ENTER | On to the difficulty screen — or, mid-run, back into the fight wearing the changes |
 | ESC | Back to the title — or, mid-run, back to the pause screen |
 | Click / tap | Every swatch and button is also a click target |
+
+| Input | Action on the difficulty screen |
+| --- | --- |
+| ↑ / ↓ (or ← / →) | Pick a level — locked ones are skipped, never landed on |
+| 1 – 4 | Jump straight to a level |
+| ENTER / Space | Clock in and start sprint 1 |
+| ESC | Back to the customizer |
+| Click / tap | A row selects it; **PLAY ›** starts. Tapping a locked row says why |
 
 Both the name and the look are remembered in `localStorage`, so a returning dev
 just presses ENTER. The same screen is reachable **mid-run** from the pause
@@ -42,13 +70,18 @@ spot, so you never have to die to restyle.
 | --- | --- |
 | Arrow keys | Scoot the chair (it drifts — office-chair physics) |
 | D / A | Spin the chair clockwise / counter-clockwise at 180°/s (hold; both at once = facing locked) |
-| 1 / 2 / 3 | Switch language: **HTML** (red) / **NODE** (green) / **GO** (blue) — recolors your letters |
+| 1 / 2 / 3 | Switch language: **HTML** (red) / **JAVA** (green) / **BASH** (blue) — recolors your letters, and the laptop screen on your chair, so what you're firing is readable without looking at the HUD |
 | I | Toggle **auto-aim** — the chair tracks the nearest ticket by itself; A/D override it |
 | O | Toggle **auto-shoot** — fire continuously by itself |
 | Space | Fire along the current facing (hold for the full letter-stream) |
 | Click / tap | Also fires |
 | P / Esc | Pause ("in a meeting") |
 | C | While paused: **edit your dev** — the customizer, then straight back into the same run |
+| Q | While paused: **quit the run** and go pick a different difficulty. Asks twice — the run is discarded and scores nothing |
+| D | On the burnout screen: straight to the difficulty screen. **R** replays the same one, **ESC** goes back to the title |
+| H | **Help** — a five-page reference: controls, the sprint clock and overflow, cups & pickups, languages & stripes, and the ticket bestiary. Also the `?` buttons on the title, difficulty and pause screens. Bosses are deliberately left out — those you meet cold |
+| F | **Fullscreen** toggle (also a button on the title screen). Works on every screen except the name field, where F is text |
+| G | **Pixel size** — BIG (chunky, the original look) or SMALL (same layout, twice the rasterization: much easier to read). Also a button on the title screen; remembered in `localStorage` |
 | M | Mute |
 | R | Restart after burnout |
 
@@ -68,6 +101,49 @@ Pants are the one thing a top-down camera cannot see, so they live only in
 the portrait. Hair style still reads from above as a silhouette (bald, long,
 bun, mohawk) and glasses as a dark bar across the face.
 
+## Difficulty
+
+Picked on its own screen between *create your dev* and the run — **how bad is
+this sprint?** The choice is fixed for the run and remembered for the next one.
+
+Eight knobs, each applied at exactly one place in `game.js`, so a row in the
+`DIFFS` table is the whole definition of a level and nothing hides in the code.
+Every number below is shown on the screen itself, relative to NORMAL, with
+"bigger = worse for you" — which is why swarm and boss cadence are displayed
+inverted, since the stored values are intervals and nobody reads an interval.
+
+| | Cups | Wrong lang | Clock | Swarm | Ticket speed | Boss cadence | SP |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **EASY** | 5 | ×1.5 | ×1.35 | ×0.77 | ×0.85 | ×0.8 | ×0.7 |
+| **NORMAL** | 3 | ×1 | ×1 | ×1 | ×1 | ×1 | ×1 |
+| **HARD** | 2 | ×0.75 | ×0.82 | ×1.28 | ×1.12 | ×1.18 | ×1.5 |
+| **CLAUDELIKE** | 1 | ×0.5 | ×0.7 | ×1.61 | ×1.25 | ×1.39 | ×2.5 |
+
+**NORMAL is every multiplier at 1** — the game exactly as it shipped before
+this screen existed, so old high scores still mean what they meant. A *matched*
+language is always ×2 on every level; only the mismatch value moves.
+
+Bosses are deliberately **not** scaled by ticket speed: their chases are tuned
+against the chair's top speed, and they have a cadence knob of their own that
+was built for exactly this (the same one laps and the soft enrage use).
+
+**CLAUDELIKE is locked** until all six bosses have been resolved **on HARD** —
+Easy and Normal clears don't count, and neither do debug runs (the same rule
+the high score already follows). The screen shows one chip per boss, lit in its
+own colour once that one has gone down, so the remaining work is visible.
+Progress lives in `localStorage` under `jiraBlasterBossesHard`.
+
+Resolving a boss says which happened — `LOGGED ON HARD — 3/6`, or
+`DEBUG RUN — NOT LOGGED` / `ONLY HARD COUNTS — NOT LOGGED` — because silence
+made the rule undiscoverable: a debug kill looked exactly like a logged one.
+
+**Debug mode opens CLAUDELIKE immediately** so it can be played and tuned
+without grinding six HARD bosses first. It is borrowed, not earned: a debug run
+still logs nothing, the screen says `OPEN FOR TESTING (DEBUG) — not earned yet`,
+and switching debug off drops the selection back to HARD. `startGame()`
+re-checks the gate, so a borrowed CLAUDELIKE (×2.5 SP) can never reach the
+standup board.
+
 ## Gameplay
 
 Every threat telegraphs; every death is avoidable. Size = threat tier, color =
@@ -85,7 +161,8 @@ type — one glance is full information:
 - **Telegraphs:** tickets materialize with a 0.4s pulsing flash + ding (inert
   until real), draw a dotted approach trail toward your chair, and flash a red
   thickened border ~1.5s before impact — always enough time to turn and shoot.
-- **HP is 3 coffee cups**, no regen (coffee drops refill one — rare). On a hit
+- **HP is 3 coffee cups** on NORMAL (5 / 3 / 2 / 1 by difficulty — see below),
+  no regen (coffee drops refill one — rare). On a hit
   the game freeze-frames for 0.5s and highlights the ticket that got you. Every
   2nd boss cleared (reaching sprint 9, 17, 25 …) is a **promotion**: your
   cup maximum grows by one, poured full.
@@ -118,13 +195,16 @@ type — one glance is full information:
   blocker. Standing off at range never opens anything. Back a pair into a wall
   and the formation flattens out sideways, which is its other weakness.
 - **Areas & languages:** every ticket belongs to an area, shown as the colored
-  stripe on its left edge — **Frontend** (red), **Backend** (green),
+  header stripe across its top edge, like a document header — **Frontend**
+  (red), **Backend** (green),
   **Infrastructure** (blue). Shooting it with the matching language (letters
-  the same color as the stripe) does **×2 damage**; Epics and bosses shrug off
-  off-area letters at **×½**. Epics pass their area to the Stories they split
-  into.
+  the same color as the stripe) always does **×2 damage**. What a *mismatch* is
+  worth is the difficulty's call (×1 on NORMAL, down to ×0.5 on CLAUDELIKE),
+  which is what decides whether the stripe is a bonus or an instruction; Epics
+  and bosses take half of that again. Epics pass their area to the Stories they
+  split into.
 - **Assists are taxed:** auto-aim / auto-shoot (I / O) work, but score earned
-  with either enabled is ×0.6.
+  with either enabled is ×0.6. CLAUDELIKE forbids them outright.
 - **Chain:** kills within 1.2s of each other build a ×1→×8 multiplier.
   Getting hit resets it to ×1 — and the ticket that hit you keeps coming
   (only hotfixes burn out on impact).
@@ -145,18 +225,21 @@ coffee + duck + energy drink on death.
 
 Each is built around a mechanic the game already teaches, and every immune or
 vulnerable window is telegraphed on the card before it matters. Bosses are also
-the only things that **throw code back at you** — grey glyphs and burning ground
-that ignore your letters completely. You cannot shoot a stack trace down; the
+the only things that **throw code back at you** — burning glyphs and burning
+ground that ignore your letters completely. Thrown code is an ember that cools
+as it travels: white-hot as it leaves the boss, orange in flight, dull red as it
+burns out, which is what tells it apart from the steady orange of ground the
+Megaoutage has already set on fire. You cannot shoot a stack trace down; the
 only answer is to not be standing there.
 
 | # | Boss | The fight |
 | --- | --- | --- |
 | 4 | **THE LEGACY MONOLITH** | Huge, slow, enormous HP. Its area stripe **rotates FE→BE→INFRA every 3.2s**, so the ×2 matchup keeps moving and you must keep switching 1/2/3. **Sheds tech debt** — Bugs on a timer *and* every seventh of its HP. It can't reach you, so it **throws the stack trace**: a ring of 9 glyphs fired outward, a glow and a pager tone ahead of it. And it **wakes up** — glacial at full HP, better than twice that speed as it comes apart. |
-| 8 | **SCOPE CREEP** | Grows every 3s — bigger, faster, +10 max HP, and buds off a Story each time ("…and a dark mode"). But the growth clock **only runs while nobody is pushing back**: sustained fire freezes it, and it restarts 1.2s after you turn away. Every growth throws two requirement docs at your head and sends its Story out on a **flanking arc**. Caps at 6 growths. On death it splits into everything it accreted. |
-| 12 | **MERGE CONFLICT** | **Twins**, `<<<` and `>>>`, linked by a visible line. They **pincer** — each steers for the point opposite its twin across you, so they arrive from both sides instead of queueing up. While they are within 90px of each other they are **rebasing** and take **half damage**: letting them converge on you is exactly what makes them tanky. Kill one alone and it **reopens at half HP** after 3.2s, with the survivor taking **×2** during the window. |
-| 16 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters**. It starts closed, and the window is something you **cause**: resolve an attendee right next to it (within 60px) and the room looks up for 2.2s. Left alone it only loses its own thread every 6s, briefly. **Mandatory attendance** — stand inside the ring drawn on the floor and it drags you into the room. Past half HP it calls attendees two at a time. |
+| 8 | **SCOPE CREEP** | **Armoured by its own scope.** Every 2.6s it buds a ticket that stays **glued to its edge** ("…and a dark mode") — attachments ride the rim and move as one body with it, and while a single one is attached **the boss cannot be damaged from any angle**. So the fight is never a damage race: strip the scope, then burn it in the window. Closing the last attachment resets the growth clock in full, so the window is guaranteed rather than lucky. Up to 5 attached at once, and it throws requirement docs at you the whole time. On death it splits into everything it accreted. |
+| 12 | **MERGE CONFLICT** | Two diverged trunks, **`main`** and **`master`**, linked by a solid line. Each keeps **cutting feature branches** — small tickets on dashed tethers, named `feat/…` and `fix/…` — and while *any* branch is open anywhere, **neither trunk can be merged**. Close one side's branches and it goes **CLEAN** and stops cutting, which is what makes the work finite: clear one, then the other, and only then are the trunks killable. They **pincer**, and within 90px they are **rebasing** at **half damage**. Kill one and the reconnect countdown starts (survivor takes **×2**) — let it run out and **both diverge again**, cutting branches from scratch. Both throw letters at you throughout. |
+| 16 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters**. It starts closed, and the window is something you **cause**: resolve an attendee right next to it (within 60px) and the room looks up for 2.2s. Left alone it only loses its own thread every 6s, briefly. **Mandatory attendance** — stand inside the ring drawn on the floor and it drags you into the room. **The agenda changes colour every 4.5s**, and the attendees it calls in are always the **other two** areas — so the language that clears a path to the room is never the language that hurts it, and the window costs you a switch to use. Past half HP it calls attendees two at a time. |
 | 20 | **P0 MEGAOUTAGE** | **aim → dash → re-aim → dash → down.** Two chained charges, each re-reading where you actually are, so one sidestep no longer settles it. Then it goes down and the incident window opens: **×2 damage**. The route it took **stays on fire** — a long fight slowly costs you the room rather than only the moment. |
-| 24 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on blind fire** — every letter you spray into FAIL heals it, so holding the trigger through the immune window is how you lose. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**, making the damage window a chase and the immune window a dodge. Every third failure it just **retries somewhere else**. |
+| 24 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on blind fire** — every letter you spray into FAIL heals it, so holding the trigger through the immune window is how you lose. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**, making the damage window a chase and the immune window a dodge. Every **second** failure it just **retries somewhere else** — a ~135px hop that swings it *around* you rather than away, so it lands on a completely different side of the room while staying inside the fight. |
 
 The roster then cycles — sprint 28 is the Monolith again — and a full lap does
 more than pad HP. Alongside **+55% HP and payout**, every timer in the fight
@@ -196,6 +279,36 @@ section on the burnout screen rather than silence, saying why.
   from `file://`, or with D1 down it draws "board unreachable — this run was not
   saved" and plays exactly the same. `?autotest=1` never posts.
 
+## Sound
+
+Two layers. The **synth** in `VOICES` is the original: every sound generated in
+code from oscillators and filtered noise, in an office palette — firing is
+typing, a kill is the column moving to Done, a boss arriving is a dial-up
+handshake. Levels sit in three tiers (constant ~0.12, punctuation ~0.20,
+once-a-sprint drama ~0.34), calibrated by rendering each voice offline; see
+`audio-test.html`.
+
+Over that, eleven **retro one-shots** from Juhani Junkala's CC0 pack (see
+[`sounds/CREDITS.md`](sounds/CREDITS.md) for the per-file provenance and how
+they were prepared). Any event named in the `SAMPLES` table plays its sample;
+everything else stays synthesised, and if the files fail to load — offline,
+blocked, a bad deploy — **every voice falls back to the synth** and the game
+sounds exactly as it did before. Move a name in or out of `SAMPLES` to switch a
+single voice.
+
+Five voices are deliberately **not** sampled, because their synth versions tell
+the office joke the pack can't: `bossIn` (dial-up), `over` (a machine powering
+down), `quack` (the rubber duck), `graze` (a filtered sweep past your ear) and
+`block` — the detuned squares that say ACCESS DENIED when your letters bounce
+off a meeting invite or an immune boss.
+
+Sample gains are measured, not chosen: the pack's files are all ~−6 dB, which
+put every one of them a tier or two too loud (`crit` first landed level with a
+boss dying). Each buffer's true peak is read back at the context sample rate and
+the gain solved for its tier. A worst-case render — held fire at 22 shots/s plus
+hits, a kill, an Epic and a boss all inside 400 ms — peaks at 0.685 through the
+master compressor with zero clipped samples. Re-measure after swapping a source.
+
 ## Dev notes
 
 - `index.html?autotest=1` runs a 25-second self-playing smoke test and reports
@@ -206,10 +319,32 @@ section on the burnout screen rather than silence, saying why.
   chrome --headless=new --enable-logging=stderr --v=1 'file://…/index.html?autotest=1' \
     2>&1 | grep -o 'AUTOTEST[^"]*'   # kill after ~40s
   ```
-- Internal resolution is **640×360**, integer-upscaled with
-  `image-rendering: pixelated` — it lands on an exact whole-number scale at
-  every common display (2× at 720p, 3× at 1080p, 4× at 1440p, 6× at 4K), so
-  pixels stay square. `VW`/`VH` at the top of `game.js` is the size dial:
+- The world is always laid out in **640×360 game units**; `G` switches how many
+  real pixels each unit is rasterized into — **BIG** (1×, backbuffer 640×360,
+  the original chunky look) or **SMALL** (2×, backbuffer 1280×720). One
+  `ctx.setTransform(RS, 0, 0, RS, 0, 0)` at the top of `draw()` is what keeps
+  every other drawing call resolution-agnostic, so layout, hit targets and
+  gameplay are byte-identical between modes — verified by comparing hit rects.
+  This is **not** the `VW`/`VH` dial below: raising that would widen the arena
+  and change the game. The gain is in text (an 8px font rasterized into 16 real
+  pixels has detail that the same glyph blown up 2× afterwards cannot), and in
+  tickets, which are drawn rotated by their wobble and so get half-size
+  stair-steps along every edge. Cost measured at ~0.08 ms/frame vs 0.07 —
+  irrelevant against a 16.7 ms budget.
+- Internal resolution is **640×360** — one backbuffer, one resolution, every
+  sprite generated in code — CSS-upscaled with `image-rendering: pixelated`.
+  `resize()` scales **fractionally** to fill the largest 16:9 box the window can
+  hold, in both directions; it used to floor to a whole multiple, which kept
+  every game pixel exactly square but left bars on any window that wasn't a 16:9
+  multiple and overflowed a phone (it clamped to a 1× minimum). The trade is
+  that at a fractional scale some source rows land on one more device pixel than
+  others, so the art shimmers slightly in motion. Aspect is deliberately
+  preserved — stretching to 100%×100% would turn every disc (the chair, the
+  graze ring, the meeting's invite radius) into an ellipse. **F** or the title
+  button goes true fullscreen via `requestFullscreen()` on the documentElement,
+  so the page backdrop fills the letterbox margin instead of a black bar; the
+  scaling policy above then fills whatever the window becomes.
+  `VW`/`VH` at the top of `game.js` is the size dial:
   raising it shrinks every element on screen and widens the arena. World
   speeds (px/s) are sized to it — scale them together and the feel, including
   the 1.5s telegraph budget, is preserved. All sprites are generated in code —

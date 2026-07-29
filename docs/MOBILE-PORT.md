@@ -16,7 +16,7 @@ Goal: playable from the existing URL in mobile Safari; no app store.
 - Left-thumb **virtual joystick** → chair movement (replaces arrows).
 - Mobile defaults **auto-aim ON**; right-thumb **FIRE button** (hold = shoot).
   Twin-stick aiming can come later — auto-aim + one thumb is what feels good.
-- 3 tap chips for language (HTML/NODE/GO) + a pause button.
+- 3 tap chips for language (HTML/JAVA/BASH) + a pause button.
 - Detect touch device (`pointer: coarse`) → show overlay controls, hide keyboard hints.
 
 ### 2. Scaling (~half day)
