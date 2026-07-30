@@ -1232,8 +1232,8 @@ let bossParts = [], bossDef = null, bossMaxHp = 0, bossBanner = 0;
 // of them come back at once. Only ever one conflict fight on the field, so one
 // list is enough — spawnBoss empties it.
 let conflictFallen = [];
-// The clock the trunks trade colours on — one timer for the whole fight, so
-// every side swaps on the same beat (see TRUNK_COLORS).
+// The clock the trunks rotate areas on — one timer for the whole fight, so
+// every side swaps on the same beat (see TRUNK_SWAP).
 let trunkSwapT = 0;
 // Boss sprints have no standup clock, so a patient player could kite one for
 // as long as they liked. This is the answer: not a fail state, just pressure.
@@ -1898,7 +1898,10 @@ function spawnBoss(n) {
     def.trunks.forEach((name, i) => {
       const e = make(VW * spots[i][0], VH * spots[i][1]);
       e.branch = name;
-      e.hueIdx = i; // its colour of the moment — the swap clock rotates this
+      // Each side works in its own stack — distinct stripes (and therefore
+      // distinct weak languages) from frame one; the swap clock rotates them.
+      e.area = AREA_KEYS[i % AREA_KEYS.length];
+      for (const f of e.feat) f.area = e.area; // the pre-cut branch follows its side
     });
     trunkSwapT = TRUNK_SWAP;
   } else {
@@ -2104,9 +2107,12 @@ function reopenTrunks(e) {
     t.branch = src.branch;   // main comes back as main
     bossParts.push(t);
   });
-  // Re-deal the colours across the full set: the fallen sides kept whatever
+  // Re-deal the areas across the full set: the fallen sides kept whatever
   // they wore when they dropped, which by now may collide with the survivor's.
-  trunks().forEach((b, i) => { b.hueIdx = i; });
+  trunks().forEach((b, i) => {
+    b.area = AREA_KEYS[i % AREA_KEYS.length];
+    for (const f of b.feat) if (enemies.includes(f)) f.area = b.area;
+  });
   divergeAgain();
   addFloater(e.x, e.y - 16,
     'REOPENED — ' + (back.length + 1) + ' BRANCHES DIVERGED', '#ff5a6e', true);
@@ -2572,13 +2578,14 @@ function trunkSlot(e) {
   };
 }
 
-// Each trunk wears its own colour — label, outline, feature tethers — and on
-// TRUNK_SWAP seconds they all trade, cyclically, so no two sides ever share
-// one. Three colours cover both rosters: with two trunks the cycle just never
-// lands two on the same entry.
-const TRUNK_COLORS = ['#7fe0ff', '#ffd23f', '#c9a8ff'];
+// Each trunk works in its own area — fe, be, infra — so its stripe, its weak
+// language, its label and its tethers are all one colour, and no two sides
+// ever share it (three areas cover both rosters). Every TRUNK_SWAP seconds
+// they all rotate one step, like the Meeting's agenda but in lockstep: the
+// side you were hurting is suddenly written in something else, and its open
+// feature branches are rewritten along with it.
 const TRUNK_SWAP = 7;
-const trunkColor = (e) => TRUNK_COLORS[(e.hueIdx || 0) % TRUNK_COLORS.length];
+const trunkColor = (e) => AREAS[e.area] ? AREAS[e.area].color : '#7fe0ff';
 const rebasing = (e) => e.boss === 'conflict' &&
   trunks().some((o) => o !== e && Math.hypot(e.x - o.x, e.y - o.y) < REBASE_DIST);
 
@@ -3129,13 +3136,20 @@ function update(dt) {
   // --- soft enrage: the sprint review is not going to move for you
   if (bossParts.length) {
     bossClock += dt;
-    // the trunks trade colours on a shared beat — a cyclic shift, so the set
-    // on the field is always distinct and always evenly spread
+    // the trunks rotate areas on a shared beat — a cyclic shift, so the set
+    // on the field is always distinct — and each side's open feature branches
+    // are rewritten in the new stack along with it
     if (trunks().length > 1) {
       trunkSwapT -= dt;
       if (trunkSwapT <= 0) {
         trunkSwapT = TRUNK_SWAP;
-        for (const b of trunks()) b.hueIdx = ((b.hueIdx || 0) + 1) % TRUNK_COLORS.length;
+        for (const b of trunks()) {
+          b.area = AREA_KEYS[(AREA_KEYS.indexOf(b.area) + 1) % AREA_KEYS.length];
+          for (const f of b.feat) if (enemies.includes(f)) f.area = b.area;
+          addFloater(b.x, b.y - b.r - 8,
+            'REWRITTEN IN ' + LANGS.find((l) => l.area === b.area).name, AREAS[b.area].color);
+        }
+        sfx.ding();
       }
     }
     if (bossClock > BOSS_ENRAGE_AT && !bossEnraged) {
