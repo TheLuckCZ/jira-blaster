@@ -108,11 +108,13 @@ this sprint?** The choice is fixed for the run and remembered for the next one.
 
 Eight knobs, each applied at exactly one place in `game.js`, so a row in the
 `DIFFS` table is the whole definition of a level and nothing hides in the code.
-Every number below is shown on the screen itself, relative to NORMAL, with
-"bigger = worse for you" — which is why swarm and boss cadence are displayed
-inverted, since the stored values are intervals and nobody reads an interval.
+Every number below is shown on the screen itself — point at a level and its
+stat sheet appears beside the rows (the selected level's sheet when the pointer
+isn't on one). All relative to NORMAL, with "bigger = worse for you" — which is
+why swarm and boss cadence are displayed inverted, since the stored values are
+intervals and nobody reads an interval.
 
-| | Cups | Wrong lang | Clock | Swarm | Ticket speed | Boss cadence | SP |
+| | Cups | Wrong tech | Clock | Swarm | Ticket speed | Boss cadence | SP |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **EASY** | 5 | ×1.5 | ×1.35 | ×0.77 | ×0.85 | ×0.8 | ×0.7 |
 | **NORMAL** | 3 | ×1 | ×1 | ×1 | ×1 | ×1 | ×1 |
@@ -121,7 +123,7 @@ inverted, since the stored values are intervals and nobody reads an interval.
 
 **NORMAL is every multiplier at 1** — the game exactly as it shipped before
 this screen existed, so old high scores still mean what they meant. A *matched*
-language is always ×2 on every level; only the mismatch value moves.
+language is always ×2 on every level; only the wrong-tech value moves.
 
 Bosses are deliberately **not** scaled by ticket speed: their chases are tuned
 against the chair's top speed, and they have a cadence knob of their own that
@@ -155,7 +157,7 @@ type — one glance is full information:
 | **Story** (M) | green card | 5 | medium | straight line |
 | **Epic** (L) | large purple card | 15 | slow | splits into 3 Stories on death |
 | **Hotfix** | small flashing orange card | 3 | very fast | no wind-up — it screams in (siren) |
-| **Meeting invite** | large grey card | ∞ | drifts | non-lethal, but it blocks your letters (cover) |
+| **Meeting invite** | large grey card | ∞ | drifts | non-lethal, but it blocks your letters (cover). Up to **4** drift through a sprint at once (`MEETING_MAX`), arriving every 5–9s; never during a boss, and they don't count toward clearing the board — so they cost you room and firing lines, not time |
 | **Bosses** | oversized named cards | huge | varies | every 4th sprint — see [Bosses](#bosses) |
 
 - **Telegraphs:** tickets materialize with a 0.4s pulsing flash + ding (inert
@@ -198,8 +200,8 @@ type — one glance is full information:
   header stripe across its top edge, like a document header — **Frontend**
   (red), **Backend** (green),
   **Infrastructure** (blue). Shooting it with the matching language (letters
-  the same color as the stripe) always does **×2 damage**. What a *mismatch* is
-  worth is the difficulty's call (×1 on NORMAL, down to ×0.5 on CLAUDELIKE),
+  the same color as the stripe) always does **×2 damage**. What the *wrong
+  tech* is worth is the difficulty's call (×1 on NORMAL, down to ×0.5 on CLAUDELIKE),
   which is what decides whether the stripe is a bonus or an instruction; Epics
   and bosses take half of that again. Epics pass their area to the Stories they
   split into.
@@ -256,7 +258,8 @@ cadence halves. It is pressure, not a fail state: the sprint review is waiting.
 
 On death the run is POSTed to `/api/jira-blaster/scores` and the top 10 is drawn
 on the BURNOUT screen, your own row lit up, with the date and time each score
-was set (in the viewer's timezone). Then `R` starts the next run.
+was set (in the viewer's timezone). Each row also carries a mini top-view of
+that player's dev, between the rank and the name. Then `R` starts the next run.
 
 The board is also drawn on the **pause** screen, from a read-only `GET` fired
 when you pause (including the auto-pause on tab-hide) and reused for 20s. No
@@ -267,14 +270,21 @@ section on the burnout screen rather than silence, saying why.
 - **Storage:** a Cloudflare D1 (SQLite) table `jira_blaster_scores` — `name`
   (primary key, `COLLATE NOCASE`), `score`, `created_at`. One row per name: a
   better run overwrites it, a worse one is ignored, so the timestamp is always
-  the time of the run being shown.
+  the time of the run being shown. A sibling table `jira_blaster_looks` holds
+  each name's avatar as the look's integer indices (JSON) — refreshed on
+  *every* post, so the icon is the dev as currently dressed, not as it was on
+  the best run. No image data is stored; the game re-renders the icon through
+  its own sprite generator.
 - **API:** a Cloudflare Pages Function behind `/api/jira-blaster/scores`.
-  `GET` returns the top 10, `POST {name, score}` records a run and returns the
-  board plus the run's rank. The browser never talks to D1 directly.
+  `GET` returns the top 10, `POST {name, score, look}` records a run and
+  returns the board plus the run's rank. The browser never talks to D1
+  directly.
 - **Trust:** the game has no accounts, so the write is unauthenticated — anyone
   with `curl` can post any score. What the endpoint accepts is bounded instead:
-  a name of ≤ 12 printable characters, an integer score, one row per name, and
-  the table pruned to the top 200 after every write.
+  a name of ≤ 12 printable characters, an integer score, one row per name, the
+  table pruned to the top 200 after every write, and a look of at most 16
+  short keys with small integer values (dropped when malformed, never a
+  rejected run — and clamped again client-side before drawing).
 - **Failure is silent and safe:** the game never waits on the network. Offline,
   from `file://`, or with D1 down it draws "board unreachable — this run was not
   saved" and plays exactly the same. `?autotest=1` never posts.

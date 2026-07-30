@@ -935,6 +935,14 @@ const VOICES = {
     [523.25, 783.99, 1046.5].forEach((f, i) =>
       bell({ f, ratio: 3, index: 300, dur: 0.6, vol: 0.21, at: 0.5 + i * 0.11, send: 0.6 }));
   },
+  // Sample-first voices, added with the retro pack (SAMPLES below). The first
+  // two fall back to their nearest synth relative; `trace` and `click` are
+  // sample-only — without the files those events stay silent, exactly as they
+  // were before the pack.
+  canPickup: () => VOICES.pickup(),  // energy drink — the can
+  bossDie: () => VOICES.bossDown(),  // a boss actually dying
+  trace: () => {},                   // the Monolith's stack-trace ring firing
+  click: () => {},                   // any UI hit-target
 };
 
 // Minimum seconds between repeats of the same sound. Held fire and dense hit
@@ -948,16 +956,16 @@ const lastPlayed = {};
 // if the files fail to load — offline, blocked, a bad deploy — every voice
 // falls back to the synth and the game sounds exactly as it did before.
 //
-// The five voices deliberately NOT sampled are the ones whose synth versions
-// carry the office joke the pack can't tell: `bossIn` (a dial-up handshake),
-// `over` (a machine powering down), `quack` (a rubber duck), `graze` (a
-// filtered noise sweep past your ear), and `block` — the two detuned squares
-// beating against each other that say ACCESS DENIED when your letters bounce
-// off a meeting invite or an immune boss. Add a name here to sample it too.
+// The four voices deliberately NOT sampled are the ones whose synth versions
+// carry the office joke the pack can't tell: `over` (a machine powering
+// down), `quack` (a rubber duck), `graze` (a filtered noise sweep past your
+// ear), and `block` — the two detuned squares beating against each other that
+// say ACCESS DENIED when your letters bounce off a meeting invite or an
+// immune boss. Add a name here to sample it too.
 //
 // WAV, not MP3: `shoot` fires up to 22×/second, and MP3 encoder delay prepends
 // silence that decodeAudioData does not reliably strip. 22.05 kHz mono keeps
-// the whole set at ~124 KB.
+// the whole set at ~450 KB.
 // Gains are NOT taste — each was measured. The sources are all ~-6 dB, which
 // put every one of them a tier or two too loud (`crit` landed at 0.34, level
 // with a boss dying). Each buffer's true peak was read back at the context
@@ -970,13 +978,18 @@ const SAMPLES = {
   hit:      0.22,
   crit:     0.26,   // sits just above `hit`, so a matched letter reads as better
   kill:     0.40,   // a coin: the ticket moved to Done
-  ding:     0.35,   // new ticket assigned
-  pickup:   0.40,
+  ding:     0.38,   // new ticket assigned
+  pickup:   0.37,
   hurt:     0.35,
   siren:    0.41,
   epicDie:  0.63,
   wave:     0.60,   // fanfare: the sprint starts
-  bossDown: 0.83,
+  bossDown: 0.83,   // mid-fight all-clear cues (scope clear, branch clean)
+  canPickup: 0.36,  // energy drink: CRUNCH MODE
+  bossDie:  0.55,   // a boss actually dying
+  trace:    0.36,   // the Monolith's stack-trace ring firing
+  click:    0.26,   // any UI hit-target
+  bossIn:   0.67,   // mechanical grind — the dial-up synth stays the fallback
 };
 const sampleBuf = {};
 let samplesAsked = false;
@@ -1034,7 +1047,10 @@ function setMuted(m) {
 
 // ---------------------------------------------------------------- input
 const keys = {};
-const mouse = { down: false };
+// x/y is the last pointer position on the 640×360 grid — the difficulty screen
+// uses it to show the hovered level's numbers. Stays at -1,-1 until the pointer
+// first moves, so keyboard-only play never has a phantom hover.
+const mouse = { down: false, x: -1, y: -1 };
 
 addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
@@ -1076,13 +1092,17 @@ addEventListener('keydown', (e) => {
   }
   if (k === 'p' || k === 'escape') {
     if (state === 'play') { paused = !paused; if (paused) loadBoard(); }
+    if (state === 'menu') {
+      if (k === 'p' && !menuBoard) { menuBoard = true; loadBoard(); }
+      else menuBoard = false;
+    }
   }
   if (k === 'c' && state === 'play' && paused) openSetup('play');
   if (k === 'q' && state === 'play' && paused) quitRun();
   if (k === 'r' && state === 'over') startGame();
   if (k === 'd' && state === 'over') openDiff();      // straight to a different sprint
   if (k === 'escape' && state === 'over') state = 'menu';
-  if (state === 'menu' && k === ' ') openSetup();
+  if (state === 'menu' && k === ' ') { if (menuBoard) menuBoard = false; else openSetup(); }
 });
 addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 
@@ -1094,11 +1114,17 @@ function canvasPos(e) {
   return { x: (e.clientX - r.left) * VW / r.width, y: (e.clientY - r.top) * VH / r.height };
 }
 
+canvas.addEventListener('pointermove', (e) => {
+  const q = canvasPos(e);
+  mouse.x = q.x; mouse.y = q.y;
+});
+
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
   if (state === 'menu') {
+    if (menuBoard) { menuBoard = false; return; } // any tap closes the board
     const q = canvasPos(e);
-    for (const h of menuHits) if (inRect(q, h)) { h.act(); return; } // leaderboard / debug slider
+    for (const h of menuHits) if (inRect(q, h)) { sfx.click(); h.act(); return; } // leaderboard / debug slider
     openSetup();
     return;
   }
@@ -1107,7 +1133,7 @@ canvas.addEventListener('pointerdown', (e) => {
     if (menuT - setupShownAt < 0.4) return;
     const q = canvasPos(e);
     for (const h of setupHits) {
-      if (q.x >= h.x && q.x <= h.x + h.w && q.y >= h.y && q.y <= h.y + h.h) { h.act(); return; }
+      if (q.x >= h.x && q.x <= h.x + h.w && q.y >= h.y && q.y <= h.y + h.h) { sfx.click(); h.act(); return; }
     }
     return;
   }
@@ -1115,26 +1141,26 @@ canvas.addEventListener('pointerdown', (e) => {
     // same guard as setup: the tap that opened this screen must not land on a row
     if (menuT - diffShownAt < 0.4) return;
     const q = canvasPos(e);
-    for (const h of diffHits) if (inRect(q, h)) { h.act(); return; }
+    for (const h of diffHits) if (inRect(q, h)) { sfx.click(); h.act(); return; }
     return;
   }
   if (state === 'help') {
     if (menuT - helpShownAt < 0.4) return;
     const q = canvasPos(e);
-    for (const h of helpHits) if (inRect(q, h)) { h.act(); return; }
+    for (const h of helpHits) if (inRect(q, h)) { sfx.click(); h.act(); return; }
     return;
   }
   if (state === 'over') {
     // the buttons win over the tap-anywhere-to-restart shortcut
     const q = canvasPos(e);
-    for (const h of overHits) if (inRect(q, h)) { h.act(); return; }
+    for (const h of overHits) if (inRect(q, h)) { sfx.click(); h.act(); return; }
     if (overTimer > 0.8) startGame();
     return;
   }
   if (state === 'play' && paused) {
     const q = canvasPos(e);
-    for (const h of pauseHits) if (inRect(q, h)) { h.act(); return; }  // edit your dev
-    if (debugMode) for (const h of debugHits) if (inRect(q, h)) { h.act(); return; } // jump to a sprint
+    for (const h of pauseHits) if (inRect(q, h)) { sfx.click(); h.act(); return; }  // edit your dev
+    if (debugMode) for (const h of debugHits) if (inRect(q, h)) { sfx.click(); h.act(); return; } // jump to a sprint
     return; // clicks on the pause overlay never fire the gun
   }
   mouse.down = true; // click/tap = fire along the current facing
@@ -1145,6 +1171,7 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 // ---------------------------------------------------------------- state
 let state = 'menu'; // 'menu' | 'setup' | 'diff' | 'play' | 'over'
 let paused = false;
+let menuBoard = false; // title screen: P shows the standup board, Esc hides it
 let autoAim = false, autoShoot = false; // assist toggles (I / O) — persist across runs
 // Debug: flipped by the title-screen slider. When on, pausing shows a level
 // jumper on the left so boss difficulty can be tuned without grinding to it.
@@ -1267,9 +1294,9 @@ const BOSSES = [
 // is the whole definition of a difficulty and nothing is hidden in the code:
 //   cups    starting coffee (startGame + jumpToSprint)
 //   off     damage for a letter in the WRONG language (bullets-vs-enemies).
-//           A match is always ×2; this is what a mismatch is worth, so it sets
-//           how much the red/green/blue stripe actually matters. Heavies and
-//           bosses take half of it, exactly as they always have.
+//           A match is always ×2; this is what the wrong tech is worth, so it
+//           sets how much the red/green/blue stripe actually matters. Heavies
+//           and bosses take half of it, exactly as they always have.
 //   dead    standup deadline length — the sprint's clock
 //   dens    spawn interval (smaller = tickets arrive closer together)
 //   speed   ticket movement. Bosses are deliberately NOT scaled by it: their
@@ -1281,11 +1308,11 @@ const BOSSES = [
 // NORMAL is every multiplier at 1 and 3 cups: the game exactly as it shipped,
 // so scores set before this screen existed still mean what they meant.
 const DIFFS = [
-  { key: 'easy',   name: 'EASY',   tag: 'a sprint with slack in it',
+  { key: 'easy',   name: 'EASY',   tag: 'we own the schedule',
     cups: 5, off: 1.5,  dead: 1.35, dens: 1.3,  speed: 0.85, cad: 1.25, sp: 0.7, assists: true,  color: '#3fe08a' },
-  { key: 'normal', name: 'NORMAL', tag: 'the sprint as it was planned',
+  { key: 'normal', name: 'NORMAL', tag: 'the schedule owns us',
     cups: 3, off: 1,    dead: 1,    dens: 1,    speed: 1,    cad: 1,    sp: 1,   assists: true,  color: '#7fe0ff' },
-  { key: 'hard',   name: 'HARD',   tag: 'someone already promised the client',
+  { key: 'hard',   name: 'HARD',   tag: 'the client owns the schedule',
     cups: 2, off: 0.75, dead: 0.82, dens: 0.78, speed: 1.12, cad: 0.85, sp: 1.5, assists: true,  color: '#ff8a5c' },
   { key: 'claudelike', name: 'CLAUDELIKE', tag: 'one cup. no assists. ship it.',
     cups: 1, off: 0.5,  dead: 0.7,  dens: 0.62, speed: 1.25, cad: 0.72, sp: 2.5, assists: false, color: '#8a63ff', locked: true },
@@ -1391,7 +1418,7 @@ function submitScore() {
   fetch(SCORES_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: playerName, score }),
+    body: JSON.stringify({ name: playerName, score, look }),
     signal: ctl.signal,
   })
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
@@ -1404,6 +1431,31 @@ function submitScore() {
       board = { status: 'error', rows: [], rank: null };
     })
     .then(() => clearTimeout(timer));
+}
+
+// Each board row carries the look its run was posted with — the same integer
+// indices this game saves locally. The server stores whatever bounded ints it
+// was sent, so every index is clamped against this build's option lists before
+// it reaches buildDevImg. Rendered once per distinct look into a 10×10 icon
+// (smoothed — nearest-neighbour at 34→10 drops whole features) and cached.
+const boardIcons = new Map();
+function boardIcon(o) {
+  if (!o || typeof o !== 'object') return null;
+  const key = JSON.stringify(o);
+  let c = boardIcons.get(key);
+  if (!c) {
+    const safe = {};
+    for (const gr of LOOK_GROUPS) {
+      const v = o[gr.key];
+      safe[gr.key] = Number.isInteger(v) && v >= 0 && v < groupLen(gr) ? v : 0;
+    }
+    c = cvOf(10, 10);
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    g.drawImage(buildDevImg(safe), 0, 0, 10, 10);
+    boardIcons.set(key, c);
+  }
+  return c;
 }
 
 // '2026-07-23T12:34:56Z' → '2026-07-23 14:34' in the player's own timezone.
@@ -1827,6 +1879,13 @@ function growScope(e) {
 // Anything still glued to it. While this is true the boss shrugs off letters.
 const scopeAttached = (e) => !!(e.scope && e.scope.some((s) => enemies.includes(s)));
 
+// How many meeting invites may be drifting through a sprint at once, and the
+// gap between arrivals. Raised from 2 / 8–14s: at that cadence a ~33s sprint
+// only ever saw two on screen, and they are the one enemy whose whole job is
+// to be in the way. The gap has to come down with the cap or the ceiling is
+// never reached inside a sprint — the pair is the setting, not the number.
+const MEETING_MAX = 4, MEETING_GAP = [5, 9];
+
 // How close you have to be for The Endless Meeting to consider you an
 // attendee, how hard it drags you in, and how close a resolved attendee has
 // to be for the room to notice and lose its thread.
@@ -1932,6 +1991,7 @@ function bossBehave(e, dt, ux, uy) {
             Math.cos(a) * TRACE_SPEED, Math.sin(a) * TRACE_SPEED, TRACE_LIFE);
         }
         shake += 3;
+        sfx.trace();
       }
     }
     // it is glacial at full HP and genuinely fast once it is coming apart
@@ -2237,7 +2297,7 @@ function killBoss(e, gained) {
   if (over) {
     recordBossKill(e); // six of these on HARD is what unlocks CLAUDELIKE
     addFloater(e.x, e.y, (bossDef ? bossDef.name : 'BOSS') + ' RESOLVED! +' + gained, '#ffd23f', true);
-    sfx.bossDown();
+    sfx.bossDie();
     // a boss always pays out — no dice roll
     pickups.push({ kind: 'coffee', x: clamp(e.x - 16, 12, VW - 12), y: e.y, life: 16, phase: rnd(0, TAU) });
     pickups.push({ kind: 'duck', x: clamp(e.x + 16, 12, VW - 12), y: e.y, life: 16, phase: rnd(0, TAU) });
@@ -2619,11 +2679,14 @@ function update(dt) {
       spawnEnemy(spawnQueue.shift());
       spawnTimer = spawnInterval * rnd(0.7, 1.3);
     }
-    // meeting invites drift in on their own calendar — but never mid-boss
+    // Meeting invites drift in on their own calendar — but never mid-boss.
+    // They are pure obstacle: infinite HP, they don't hunt you, and they are
+    // excluded from the sprint-clear check, so more of them costs you room and
+    // firing lines rather than time.
     meetingCd -= dt;
     if (sprint >= 2 && sprint % 4 !== 0 && meetingCd <= 0) {
-      if (enemies.filter(e => e.type === 'meeting').length < 2) spawnEnemy('meeting');
-      meetingCd = rnd(8, 14);
+      if (enemies.filter(e => e.type === 'meeting').length < MEETING_MAX) spawnEnemy('meeting');
+      meetingCd = rnd(MEETING_GAP[0], MEETING_GAP[1]);
     }
     const cleared = !spawnQueue.length && !enemies.some(e => e.type !== 'meeting');
     if (cleared || timedOut) {
@@ -2853,13 +2916,13 @@ function update(dt) {
           continue outer;
         }
         const matched = e.area && LANGS[b.lang].area === e.area;
-        // A match is always ×2. What a MISmatch is worth is the difficulty's
+        // A match is always ×2. What the wrong tech is worth is the difficulty's
         // call — it decides whether the stripe is a bonus or an instruction.
         let dmg = matched ? 2 : curDiff().off;
         // heavies resist off-area letters — switching language is the real answer
         if (!matched && e.area && (e.boss || e.type === 'epic')) {
           dmg = curDiff().off * 0.5;
-          if (!e.resistHint) { e.resistHint = true; addFloater(e.x, e.y - e.r - 8, 'WRONG LANGUAGE — ×½', '#8f8fa8'); }
+          if (!e.resistHint) { e.resistHint = true; addFloater(e.x, e.y - e.r - 8, 'WRONG TECH — ×½', '#8f8fa8'); }
         }
         if (e.boss === 'outage' && e.mode === 'down') dmg *= 2; // the incident window
         if (e.boss === 'conflict' && e.reviveT > 0) dmg *= 2;   // one side already resolved
@@ -2911,7 +2974,7 @@ function update(dt) {
       if (pk.kind === 'can') { p.rapidT = 8; addFloater(pk.x, pk.y, 'CRUNCH MODE!', '#2fe4c8'); }
       if (pk.kind === 'duck') { p.duckT = 3; addFloater(pk.x, pk.y, 'DUCK SHIELD!', '#ffd23f'); }
       pickups.splice(i, 1);
-      sfx.pickup();
+      sfx[pk.kind === 'can' ? 'canPickup' : 'pickup']();
     }
   }
 
@@ -3488,6 +3551,20 @@ function drawMenu() {
   ctx.fillStyle = 'rgba(8,12,24,0.55)';
   ctx.fillRect(0, 0, VW, VH);
   menuHits.length = 0;
+  if (menuBoard) {
+    // board-only page: same top-down layout as the pause screen, no rank
+    ctx.fillStyle = 'rgba(8,12,24,0.82)';
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillStyle = '#dfe6ff';
+    ctx.fillText('LEADERBOARD', VW / 2, 48);
+    drawBoard(74, false);
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#8f8fa8';
+    ctx.fillText('ESC — back to the title', VW / 2, VH - 20);
+    return;
+  }
   const cx = VW / 2, cy = VH / 2; // laid out from the centre so it survives a resolution change
 
   // spinning chair
@@ -3759,7 +3836,7 @@ function drawSetup() {
 const mulTag = (v) => '×' + (Math.round(v * 100) / 100);
 const DIFF_COLS = [
   { label: 'CUPS',  val: (d) => String(d.cups) },
-  { label: 'WRONG', val: (d) => mulTag(d.off) },
+  { label: 'WRONG TECH', val: (d) => mulTag(d.off) }, // wrong-language letter damage
   { label: 'CLOCK', val: (d) => mulTag(d.dead) },
   { label: 'SWARM', val: (d) => mulTag(1 / d.dens) },
   { label: 'SPEED', val: (d) => mulTag(d.speed) },
@@ -3779,18 +3856,16 @@ function drawDiff() {
   ctx.fillStyle = '#ffd23f'; ctx.fillText('HOW BAD IS THIS SPRINT?', cx, 18);
   ctx.font = '8px monospace';
   ctx.fillStyle = '#8f8fa8';
-  ctx.fillText('↑↓ pick  ·  ENTER to clock in  ·  every number is relative to NORMAL', cx, 30);
+  ctx.fillText('↑↓ pick  ·  ENTER to clock in  ·  point at a level for its numbers', cx, 30);
 
-  const rx = 16, rw = VW - 32, sx = 216, colW = (VW - 24 - sx) / DIFF_COLS.length;
-
-  // column headings, written once above the rows
-  ctx.font = '7px monospace';
-  ctx.fillStyle = '#5a6a90';
-  for (let c = 0; c < DIFF_COLS.length; c++) ctx.fillText(DIFF_COLS[c].label, sx + colW * (c + 0.5), 44);
+  // half-width rows, centred; the stat sheet sits to their right
+  const rw = Math.round((VW - 32) / 2), rx = Math.round((VW - rw) / 2);
+  let hovIdx = -1;
 
   for (let i = 0; i < DIFFS.length; i++) {
     const d = DIFFS[i], y = 48 + i * 52, h = 46;
     const on = i === diffIdx, open = diffUnlocked(d);
+    if (mouse.x >= rx && mouse.x < rx + rw && mouse.y >= y && mouse.y < y + h) hovIdx = i;
 
     ctx.globalAlpha = open ? 1 : 0.45;
     ctx.fillStyle = on ? 'rgba(58,47,87,0.55)' : 'rgba(8,12,24,0.85)';
@@ -3806,15 +3881,6 @@ function drawDiff() {
     ctx.fillStyle = '#8f8fa8';
     ctx.fillText(open ? d.tag : 'LOCKED — see below', rx + 22, y + 34);
     if (on) { ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 10px monospace'; ctx.fillText('>', rx + 8, y + 21); }
-
-    ctx.textAlign = 'center';
-    ctx.font = '9px monospace';
-    for (let c = 0; c < DIFF_COLS.length; c++) {
-      const v = DIFF_COLS[c].val(d);
-      // dim anything identical to NORMAL — what's left is what actually changed
-      ctx.fillStyle = !open ? '#5a6a90' : v === DIFF_COLS[c].val(DIFFS[1]) ? '#5a6a90' : d.color;
-      ctx.fillText(v, sx + colW * (c + 0.5), y + 27);
-    }
     if (!d.assists) {
       ctx.font = '7px monospace';
       ctx.fillStyle = '#8f8fa8';
@@ -3824,6 +3890,30 @@ function drawDiff() {
     ctx.globalAlpha = 1;
 
     diffHits.push({ x: rx, y, w: rw, h, act: () => pickDiff(i) });
+  }
+
+  // the stat sheet: the hovered level's numbers, or the selected one's when
+  // the pointer isn't on a row (keyboard and touch both land here). Fixed
+  // beside the rows rather than following them, so it never jumps around.
+  const sd = DIFFS[hovIdx >= 0 ? hovIdx : diffIdx];
+  const sdOpen = diffUnlocked(sd);
+  const colX = rx + rw + 62;
+  let ly = 48 + 52 * 2 - 28 - Math.round((DIFF_COLS.length * 11) / 2); // centred on the rows block
+  ctx.font = 'bold 9px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = sdOpen ? sd.color : '#5a6a90';
+  ctx.fillText(sd.name, colX + 3, ly);
+  ctx.font = '9px monospace';
+  for (const col of DIFF_COLS) {
+    const v = col.val(sd);
+    ly += 11;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#5a6a90';
+    ctx.fillText(col.label.toLowerCase(), colX, ly);
+    ctx.textAlign = 'left';
+    // dim anything identical to NORMAL — what's left is what actually changed
+    ctx.fillStyle = !sdOpen ? '#5a6a90' : v === col.val(DIFFS[1]) ? '#8f8fa8' : sd.color;
+    ctx.fillText(': ' + v, colX + 3, ly);
   }
 
   // the unlock strip: what CLAUDELIKE costs, and how far along you are
@@ -4040,7 +4130,7 @@ function helpLangs() {
   y += LANGS.length * 22 + 6;
 
   y = hRow('MATCHING THE STRIPE = ×2 DAMAGE', 24, y, '#3fe08a', 'bold 9px monospace');
-  y = hRow('A mismatch still does something, but how much is set by the', 24, y);
+  y = hRow('The wrong tech still does something, but how much is set by the', 24, y);
   y = hRow('difficulty you picked: ×1 on NORMAL, down to ×0.5 on CLAUDELIKE.', 24, y);
   y = hRow('Epics and bosses take half of that again — against those, switching', 24, y);
   y = hRow('language is the only real answer.', 24, y);
@@ -4225,8 +4315,8 @@ function drawBoard(y, withRank) {
     return y;
   }
 
-  // columns: rank | name | score | when
-  const R = 204, N = 212, S = 344, W = 452;
+  // columns: rank | dev icon | name | score | when
+  const R = 204, I = 207, N = 222, S = 344, W = 452;
   const me = playerName.toLowerCase();
   for (let i = 0; i < board.rows.length; i++) {
     const row = board.rows[i];
@@ -4235,6 +4325,8 @@ function drawBoard(y, withRank) {
     ctx.textAlign = 'right';
     ctx.fillStyle = mine ? '#ffd23f' : '#5a6a90';
     ctx.fillText((i + 1) + '.', R, y);
+    const ic = boardIcon(row.look);   // rows from before looks existed have none
+    if (ic) ctx.drawImage(ic, I, y - 8, 10, 10);
     ctx.textAlign = 'left';
     ctx.fillStyle = mine ? '#ffd23f' : '#dfe6ff';
     ctx.fillText(String(row.name), N, y);
