@@ -4157,19 +4157,20 @@ function drawDebugLevels() {
   for (let n = 1; n <= DEBUG_MAX_SPRINT; n++) {
     labels.push(n % 4 === 0
       ? 'BOSS ' + (n / 4) + ' · ' + BOSSES[(n / 4 - 1) % BOSSES.length].name
-      : n === HACK_SPRINT ? 'THE HACKATHON (FINAL)' : 'SPRINT ' + n);
+      : n === HACK_SPRINT ? 'THE FINAL HACKATHON' : 'SPRINT ' + n);
   }
   const w = Math.ceil(Math.max(...labels.map((l) => ctx.measureText(l).width))) + 10;
   for (let n = 1; n <= DEBUG_MAX_SPRINT; n++) {
     const yy = top + (n - 1) * rowH;
     const boss = n % 4 === 0;
+    const hack = n === HACK_SPRINT; // the final sprint gets its own light-blue row
     const label = labels[n - 1];
     const cur = n === sprint;
-    ctx.fillStyle = boss ? 'rgba(255,90,110,0.16)' : 'rgba(63,224,138,0.10)';
+    ctx.fillStyle = boss ? 'rgba(255,90,110,0.16)' : hack ? 'rgba(127,224,255,0.14)' : 'rgba(63,224,138,0.10)';
     ctx.fillRect(x, yy, w, rowH - 1);
-    ctx.strokeStyle = cur ? '#ffd23f' : boss ? '#ff5a6e' : '#3a6a52';
+    ctx.strokeStyle = cur ? '#ffd23f' : boss ? '#ff5a6e' : hack ? '#7fe0ff' : '#3a6a52';
     ctx.strokeRect(x + 0.5, yy + 0.5, w - 1, rowH - 2);
-    ctx.fillStyle = cur ? '#ffd23f' : boss ? '#ff9aa6' : '#dfe6ff';
+    ctx.fillStyle = cur ? '#ffd23f' : boss ? '#ff9aa6' : hack ? '#7fe0ff' : '#dfe6ff';
     ctx.fillText(label, x + 5, yy + rowH - 3);
     debugHits.push({ x, y: yy, w, h: rowH - 1, act: () => jumpToSprint(n) });
   }
