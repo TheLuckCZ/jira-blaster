@@ -254,40 +254,54 @@ And no boss lets you kite it forever. Boss sprints have no clock, so after
 **75 seconds** the fight stops being polite — everything speeds up and every
 cadence halves. It is pressure, not a fail state: the sprint review is waiting.
 
+## The Hackathon (sprint 33 — the end)
+
+After the 8th boss falls (sprint 32), there is exactly one sprint left, and it
+cannot be cleared: **THE HACKATHON**. No standup clock, no spawn queue —
+tickets simply stream in, in the sprint-33 mix with the odd Epic folded in,
+and the ratchet turns for as long as you last: the spawn interval **halves
+every 45 seconds** (floored at 0.12s), and every new ticket arrives **moving
+faster than the last** (up to 2.5× at 135s). Meetings still drift through.
+The HUD counts seconds survived instead of a deadline, because that is the
+score that matters now: the run ends here, at zero cups, for everyone — and
+then it goes on the board.
+
 ## The standup board (leaderboard)
 
-On death the run is POSTed to `/api/jira-blaster/scores` and the top 10 is drawn
-on the BURNOUT screen, your own row lit up, with the date and time each score
-was set (in the viewer's timezone). Each row also carries a mini top-view of
-that player's dev, between the rank and the name. Then `R` starts the next run.
+Every non-debug death POSTs the run to `/api/jira-blaster/scores` — 0 SP
+included, and a run worse than your best still lands under it: the board is
+one row **per run**, not per name. Quitting from pause posts nothing; only an
+empty coffee cup does. The board is drawn on the BURNOUT screen, your own rows
+lit up, with the date and time of each run (in the viewer's timezone) and a
+mini top-view of the dev the run was played with, between the rank and the
+name. Ten rows at a time, with `‹` / `›` paging buttons once it outgrows a
+page. Then `R` starts the next run.
 
 The board is also drawn on the **pause** screen, from a read-only `GET` fired
 when you pause (including the auto-pause on tab-hide) and reused for 20s. No
 rank line there: a run still in progress hasn't got one. And a run that could
-*not* be posted — offline, opened from `file://`, or 0 SP — still gets the board
+*not* be posted — offline, or opened from `file://` — still gets the board
 section on the burnout screen rather than silence, saying why.
 
-- **Storage:** a Cloudflare D1 (SQLite) table `jira_blaster_scores` — `name`
-  (primary key, `COLLATE NOCASE`), `score`, `created_at`. One row per name: a
-  better run overwrites it, a worse one is ignored, so the timestamp is always
-  the time of the run being shown. A sibling table `jira_blaster_looks` holds
-  each name's avatar as the look's integer indices (JSON) — refreshed on
-  *every* post, so the icon is the dev as currently dressed, not as it was on
-  the best run. No image data is stored; the game re-renders the icon through
-  its own sprite generator.
+- **Storage:** a Cloudflare D1 (SQLite) table `jira_blaster_runs` — `id`,
+  `name` (`COLLATE NOCASE`), `score`, `look`, `created_at`. The look (the
+  dev's integer indices, JSON) travels with the run it was played on. No
+  image data is stored; the game re-renders the icon through its own sprite
+  generator. (Two earlier tables are retired: `jira_blaster_scores`, one
+  best row per name, and the short-lived `jira_blaster_looks`.)
 - **API:** a Cloudflare Pages Function behind `/api/jira-blaster/scores`.
-  `GET` returns the top 10, `POST {name, score, look}` records a run and
-  returns the board plus the run's rank. The browser never talks to D1
-  directly.
+  `GET` returns the kept runs (up to 200) which the game pages by 10;
+  `POST {name, score, look}` records a run and returns the board plus the
+  run's rank. The browser never talks to D1 directly.
 - **Trust:** the game has no accounts, so the write is unauthenticated — anyone
   with `curl` can post any score. What the endpoint accepts is bounded instead:
-  a name of ≤ 12 printable characters, an integer score, one row per name, the
-  table pruned to the top 200 after every write, and a look of at most 16
-  short keys with small integer values (dropped when malformed, never a
-  rejected run — and clamped again client-side before drawing).
+  a name of ≤ 12 printable characters, an integer score, the table pruned to
+  the top 200 runs after every write, and a look of at most 16 short keys
+  with small integer values (dropped when malformed, never a rejected run —
+  and clamped again client-side before drawing).
 - **Failure is silent and safe:** the game never waits on the network. Offline,
   from `file://`, or with D1 down it draws "board unreachable — this run was not
-  saved" and plays exactly the same. `?autotest=1` never posts.
+  saved" and plays exactly the same. `?autotest=1` and debug runs never post.
 
 ## Sound
 

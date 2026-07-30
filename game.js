@@ -1122,7 +1122,11 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
   if (state === 'menu') {
-    if (menuBoard) { menuBoard = false; return; } // any tap closes the board
+    if (menuBoard) {
+      const q0 = canvasPos(e);
+      for (const h of menuHits) if (inRect(q0, h)) { sfx.click(); h.act(); return; } // pager
+      menuBoard = false; return; // any other tap closes the board
+    }
     const q = canvasPos(e);
     for (const h of menuHits) if (inRect(q, h)) { sfx.click(); h.act(); return; } // leaderboard / debug slider
     openSetup();
@@ -1176,7 +1180,7 @@ let autoAim = false, autoShoot = false; // assist toggles (I / O) — persist ac
 // Debug: flipped by the title-screen slider. When on, pausing shows a level
 // jumper on the left so boss difficulty can be tuned without grinding to it.
 let debugMode = false;
-const DEBUG_MAX_SPRINT = 34;
+const DEBUG_MAX_SPRINT = 33; // the hackathon is terminal — nothing past it
 const menuHits = [];   // title-screen click targets (the debug slider), rebuilt each frame
 const debugHits = [];  // debug pause-overlay click targets (the level list), rebuilt each frame
 // Equipped language (keys 1/2/3), persists across runs. Starts on BASH: the
@@ -1191,6 +1195,13 @@ let shake = 0;
 
 let player, bullets, enemies, particles, floaters, pickups;
 let sprint, phase, breakTimer, spawnQueue, spawnTimer, spawnInterval, meetingCd;
+// After the 8th boss (sprint 32) comes the one sprint you cannot clear: THE
+// HACKATHON. No standup clock, no spawn queue — tickets stream in forever,
+// arriving faster (interval halves every HACK_RAMP seconds) and moving faster
+// (makeEnemy reads hackT), until the coffee runs out. Every run ends here.
+const HACK_SPRINT = 33;
+const HACK_RAMP = 45;
+let hackT = 0;      // seconds survived in the hackathon
 // Sprint deadline: seconds until "standup". When it hits, every live and future
 // ticket of the sprint enrages (faster, red, worth ×1.5). Boss sprints untimed.
 let deadlineT = 0;
@@ -1375,6 +1386,8 @@ const BOARD_TIMEOUT = 6000;
 let board = null;    // null | { status: 'sending' | 'ok' | 'error', rows, rank }
 let boardGen = 0;    // ignores a slow reply from an earlier run
 let boardAt = -1e9;  // menuT of the last good read — the pause screen reuses it
+const BOARD_PAGE = 10; // rows per page; the API returns up to 200 runs
+let boardPage = 0;
 
 // Read-only board, for the pause screen: the same rows the death screen draws,
 // without recording anything. `rank` stays null — it belongs to a finished run.
@@ -1388,6 +1401,7 @@ function loadBoard() {
   if (board && board.status === 'ok' && menuT - boardAt < 20) return; // fresh enough
 
   const gen = ++boardGen;
+  boardPage = 0;
   board = { status: 'sending', rows: [], rank: null };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), BOARD_TIMEOUT);
@@ -1407,9 +1421,12 @@ function loadBoard() {
 
 function submitScore() {
   board = null;
+  boardPage = 0;
   if (AUTOTEST) return;                              // never write to the live board
-  // Nothing to record — but the board is still what the death screen owes you.
-  if (!/^https?:$/.test(location.protocol) || score <= 0) { loadBoard(); return; }
+  // Every non-debug death is a run worth recording, 0 SP included — the
+  // caller already routes debug runs to loadBoard() instead. Opened from
+  // disk there is no API, but the board is still what the screen owes you.
+  if (!/^https?:$/.test(location.protocol)) { loadBoard(); return; }
 
   const gen = ++boardGen;
   board = { status: 'sending', rows: [], rank: null };
@@ -1566,7 +1583,7 @@ function startGame() {
   bullets = []; enemies = []; particles = []; floaters = []; pickups = []; hazards = [];
   sprint = 1; phase = 'break'; breakTimer = 2.5;
   spawnQueue = []; spawnTimer = 0; spawnInterval = 1; meetingCd = 6;
-  deadlineT = 0; backlog = [];
+  deadlineT = 0; backlog = []; hackT = 0;
   combo = 1; comboT = 0; hitFreeze = 0; culprit = null;
   bossParts = []; bossDef = null; bossMaxHp = 0; bossBanner = 0;
   bossClock = 0; bossEnraged = false;
@@ -1592,6 +1609,17 @@ function buildSprint(n) {
     for (let i = 0; i < epics; i++) q.splice(Math.floor(Math.random() * (q.length + 1)), 0, 'epic');
   }
   return q;
+}
+
+// The hackathon's ticket mix, picked per spawn since the stream never ends:
+// the same weights buildSprint would use at sprint 33, with the epics folded
+// in as a small steady chance instead of a per-sprint quota.
+function pickHackType() {
+  const w = [['bug', 10], ['story', 36], ['hotfix', 12.5], ['epic', 1.5]];
+  const total = w.reduce((s, e) => s + e[1], 0);
+  let r = Math.random() * total;
+  for (const [type, wt] of w) { r -= wt; if (r <= 0) return type; }
+  return 'bug';
 }
 
 // ---------------------------------------------------------------- backlog
@@ -1687,8 +1715,11 @@ function makeEnemy(type, x, y) {
     type, x, y,
     area: type === 'meeting' ? null : pick(AREA_KEYS),
     hp: def.hp, maxHp: def.hp,
-    // bosses keep their tuned speed — the difficulty leans on their cadence
-    sp: def.sp * rnd(0.9, 1.1) * (def.boss ? 1 : curDiff().speed),
+    // bosses keep their tuned speed — the difficulty leans on their cadence.
+    // In the hackathon every new ticket arrives faster than the last, up to
+    // 2.5× at 135s — the other half of the ratchet the spawn interval starts.
+    sp: def.sp * rnd(0.9, 1.1) * (def.boss ? 1 : curDiff().speed)
+      * (!def.boss && sprint === HACK_SPRINT ? 1 + Math.min(1.5, hackT / 90) : 1),
     r: def.r, score: def.score, img: def.img, scale: def.scale || 1,
     wobPhase: rnd(0, TAU), wobFreq: rnd(def.wobFreq[0], def.wobFreq[1]), wobAmp: def.wobAmp,
     touchCd: 0, spawnT: 0.4, windup: false, grazed: false, grazeArmed: false, vx: 0, vy: 0, burstT: 0,
@@ -2645,24 +2676,39 @@ function update(dt) {
     breakTimer -= dt;
     if (breakTimer <= 0) {
       phase = 'wave';
-      spawnQueue = buildSprint(sprint);
-      // density is the dial: interval decays 8% per sprint, floored at 0.3s
-      spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1)) * curDiff().dens;
-      spawnTimer = 0;
-      // the sprint has a standup deadline; boss fights are untimed
-      // carry-over counts against the clock too — a sprint that inherits a
-      // backlog gets the time to work it, but no more than that
-      deadlineT = sprint % 4 === 0 ? 0 : (20 + (spawnQueue.length + backlog.length) * 0.7) * curDiff().dead;
-      sfx.wave();
-      if (sprint % 4 === 0) {
-        spawnBoss(sprint); // boss sprints are the boss, alone
-        // The pens stay shut through a boss fight. A boss sprint has no clock,
-        // so anything released into it must be killed for the sprint to end —
-        // and a BLOCKED BY pair that the player can't flank would deadlock the
-        // run outright. It also keeps "boss plus a full backlog" from being the
-        // hardest thing in the game by a wide margin. They wait one more sprint.
+      if (sprint >= HACK_SPRINT) {
+        // the terminal sprint: no queue, no clock — the spawning lives in the
+        // wave branch below, ramping for as long as the player lasts
+        sprint = HACK_SPRINT;
+        hackT = 0;
+        spawnQueue = [];
+        spawnInterval = 0.9 * curDiff().dens;
+        spawnTimer = 0;
+        deadlineT = 0;
+        sfx.wave();
+        addFloater(player.x, player.y - 20, 'HACKATHON — THERE IS NO FINISH LINE', '#ffd23f', true);
+        releaseBacklog(); // whatever boss 8 left caged joins the party
       } else {
-        releaseBacklog(); // the pens open the moment the standup ends
+        spawnQueue = buildSprint(sprint);
+        // density is the dial: interval decays 8% per sprint, floored at 0.3s
+        spawnInterval = Math.max(0.3, 1.1 * Math.pow(0.92, sprint - 1)) * curDiff().dens;
+        spawnTimer = 0;
+        // the sprint has a standup deadline; boss fights are untimed
+        // carry-over counts against the clock too — a sprint that inherits a
+        // backlog gets the time to work it, but no more than that
+        deadlineT = sprint % 4 === 0 ? 0 : (20 + (spawnQueue.length + backlog.length) * 0.7) * curDiff().dead;
+        sfx.wave();
+        if (sprint % 4 === 0) {
+          spawnBoss(sprint); // boss sprints are the boss, alone
+          // The pens stay shut through a boss fight. A boss sprint has no
+          // clock, so anything released into it must be killed for the sprint
+          // to end — and a BLOCKED BY pair that the player can't flank would
+          // deadlock the run outright. It also keeps "boss plus a full
+          // backlog" from being the hardest thing in the game by a wide
+          // margin. They wait one more sprint.
+        } else {
+          releaseBacklog(); // the pens open the moment the standup ends
+        }
       }
     }
   } else {
@@ -2679,6 +2725,18 @@ function update(dt) {
       spawnEnemy(spawnQueue.shift());
       spawnTimer = spawnInterval * rnd(0.7, 1.3);
     }
+    // THE HACKATHON: no queue — the stream itself is the sprint. The interval
+    // halves every HACK_RAMP seconds (floor 0.12s); newly spawned tickets also
+    // move faster as hackT climbs (see makeEnemy). The 70-enemy ceiling is a
+    // frame-rate guard, not mercy: at that density the office is already lost.
+    if (sprint === HACK_SPRINT) {
+      hackT += dt;
+      spawnInterval = Math.max(0.12, 0.9 * Math.pow(0.5, hackT / HACK_RAMP)) * curDiff().dens;
+      if (spawnTimer <= 0 && enemies.length < 70) {
+        spawnEnemy(pickHackType());
+        spawnTimer = spawnInterval * rnd(0.7, 1.3);
+      }
+    }
     // Meeting invites drift in on their own calendar — but never mid-boss.
     // They are pure obstacle: infinite HP, they don't hunt you, and they are
     // excluded from the sprint-clear check, so more of them costs you room and
@@ -2689,7 +2747,9 @@ function update(dt) {
       meetingCd = rnd(MEETING_GAP[0], MEETING_GAP[1]);
     }
     const cleared = !spawnQueue.length && !enemies.some(e => e.type !== 'meeting');
-    if (cleared || timedOut) {
+    // the hackathon has no deadline and cannot be cleared — a momentarily
+    // empty board between spawns must not end the sprint that never ends
+    if (sprint !== HACK_SPRINT && (cleared || timedOut)) {
       const wasBoss = sprint % 4 === 0;
       // Clearing the board early still pays in full; running out the clock
       // pays a third and hands the remainder to next sprint.
@@ -3206,10 +3266,13 @@ function draw() {
       ctx.fillText(clearMsg, VW / 2, VH / 2 - 20);
     }
     ctx.font = 'bold 20px monospace';
-    ctx.fillStyle = '#dfe6ff';
-    ctx.fillText('SPRINT ' + sprint, VW / 2, VH / 2 + 2);
+    ctx.fillStyle = sprint >= HACK_SPRINT ? '#ffd23f' : '#dfe6ff';
+    ctx.fillText(sprint >= HACK_SPRINT ? 'THE HACKATHON' : 'SPRINT ' + sprint, VW / 2, VH / 2 + 2);
     ctx.font = '8px monospace';
-    if (sprint % 4 === 0) {
+    if (sprint >= HACK_SPRINT) {
+      ctx.fillStyle = '#ff8a5c';
+      ctx.fillText('no deadline. no end. it ships when you drop — ' + Math.ceil(breakTimer) + '…', VW / 2, VH / 2 + 14);
+    } else if (sprint % 4 === 0) {
       const next = BOSSES[(Math.floor(sprint / 4) - 1) % BOSSES.length];
       ctx.fillStyle = '#ff8a5c';
       ctx.fillText('ESCALATED TO ' + next.name + ' — ' + Math.ceil(breakTimer) + '…', VW / 2, VH / 2 + 14);
@@ -3238,11 +3301,12 @@ function draw() {
     ctx.font = '8px monospace';
     ctx.fillStyle = '#8f8fa8';
     y += 14; ctx.fillText('(in a meeting — press P to escape)', VW / 2, y);
-    drawBoard(y + 26, false); // a mid-run rank would be a lie — rows only
+    pauseHits.length = 0; // cleared before drawBoard so its pager can register
+    ctx.font = '8px monospace';
+    drawBoard(y + 26, false, pauseHits); // a mid-run rank would be a lie — rows only
     if (debugMode) drawDebugLevels(); // left-column level jumper
     // Changing your dev is the one thing you could only do before a run, which
     // meant dying for it. Centred so it clears the debug column on the left.
-    pauseHits.length = 0;
     ctx.font = 'bold 10px monospace';
     const armed = quitArmed();
     uiButton(pauseHits, btnX(3, 0), BTN_Y, BTN_W, BTN_H,
@@ -3489,9 +3553,13 @@ function drawHud() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#dfe6ff';
   ctx.font = 'bold 9px monospace';
-  ctx.fillText('SPRINT ' + sprint, VW / 2, 12);
+  ctx.fillText(sprint === HACK_SPRINT ? 'THE HACKATHON' : 'SPRINT ' + sprint, VW / 2, 12);
   if (phase === 'wave' && bossParts.length) {
     drawBossBar(); // the boss owns this strip while it lives
+  } else if (phase === 'wave' && sprint === HACK_SPRINT) {
+    ctx.font = '8px monospace';
+    ctx.fillStyle = hackT > 90 ? '#ff5a6e' : hackT > 45 ? '#ff8a5c' : '#8f8fa8';
+    ctx.fillText(Math.floor(hackT) + 's survived · ' + enemies.length + ' on the board · it only gets worse', VW / 2, 21);
   } else if (phase === 'wave') {
     ctx.font = '8px monospace';
     // the clock now ends the sprint rather than enraging it, so it reads hot
@@ -3559,7 +3627,8 @@ function drawMenu() {
     ctx.font = 'bold 16px monospace';
     ctx.fillStyle = '#dfe6ff';
     ctx.fillText('LEADERBOARD', VW / 2, 48);
-    drawBoard(74, false);
+    ctx.font = '8px monospace';
+    drawBoard(74, false, menuHits); // menuHits was just cleared — only the pager lands in it
     ctx.font = '8px monospace';
     ctx.fillStyle = '#8f8fa8';
     ctx.fillText('ESC — back to the title', VW / 2, VH - 20);
@@ -3651,7 +3720,7 @@ function drawDebugLevels() {
     const boss = n % 4 === 0;
     const label = boss
       ? 'BOSS ' + (n / 4) + ' · ' + BOSSES[(n / 4 - 1) % BOSSES.length].name
-      : 'SPRINT ' + n;
+      : n === HACK_SPRINT ? 'THE HACKATHON (FINAL)' : 'SPRINT ' + n;
     const cur = n === sprint;
     ctx.fillStyle = boss ? 'rgba(255,90,110,0.16)' : 'rgba(63,224,138,0.10)';
     ctx.fillRect(x, yy, w, rowH - 1);
@@ -4271,7 +4340,8 @@ function drawGameOver() {
     y += 13; ctx.fillText('★ NEW HIGH SCORE ★', cx, y);
   }
 
-  y = drawBoard(y + 24, true);
+  overHits.length = 0; // cleared before drawBoard so its pager can register
+  y = drawBoard(y + 24, true, overHits);
 
   if (overTimer > 0.8 && Math.floor(overTimer * 2) % 2 === 0) {
     ctx.textAlign = 'center';
@@ -4284,7 +4354,6 @@ function drawGameOver() {
   // Dying used to be the only way out of a run, and it still only offered the
   // same run again — no way back to the difficulty screen or the title without
   // reloading the page. All three ways on are here now.
-  overHits.length = 0;
   if (overTimer > 0.8) {
     ctx.font = 'bold 10px monospace';
     uiButton(overHits, btnX(3, 0), BTN_Y, BTN_W, BTN_H, '‹ TITLE', '#5a6a90', () => { state = 'menu'; });
@@ -4296,7 +4365,9 @@ function drawGameOver() {
 // The standup board, drawn from `board` — never blocks, never throws: an
 // unsent, pending or failed board is one line of text and the screen goes on.
 // `withRank` is for the death screen: only a finished run has a rank.
-function drawBoard(y, withRank) {
+// The API returns up to 200 runs; they're paged BOARD_PAGE at a time, with
+// the pager buttons registered into `hits` (the calling screen's hit list).
+function drawBoard(y, withRank, hits) {
   if (!board) return y;
   const cx = VW / 2;
 
@@ -4318,7 +4389,10 @@ function drawBoard(y, withRank) {
   // columns: rank | dev icon | name | score | when
   const R = 204, I = 207, N = 222, S = 344, W = 452;
   const me = playerName.toLowerCase();
-  for (let i = 0; i < board.rows.length; i++) {
+  const pages = Math.ceil(board.rows.length / BOARD_PAGE);
+  if (boardPage >= pages) boardPage = pages - 1; // rows shrank under the pager
+  const start = boardPage * BOARD_PAGE;
+  for (let i = start; i < Math.min(start + BOARD_PAGE, board.rows.length); i++) {
     const row = board.rows[i];
     const mine = String(row.name).toLowerCase() === me;
     y += 11;
@@ -4334,6 +4408,21 @@ function drawBoard(y, withRank) {
     ctx.fillText(row.score + ' SP', S, y);
     ctx.fillStyle = mine ? '#c9a86a' : '#5a6a90';
     ctx.fillText(fmtWhen(row.at), W, y);
+  }
+
+  // pager — only once the board outgrows one page
+  if (pages > 1 && hits) {
+    y += 8;
+    ctx.font = 'bold 9px monospace';
+    uiButton(hits, cx - 62, y, 24, 13, '‹', boardPage > 0 ? '#7fe0ff' : '#5a6a90',
+      () => { if (boardPage > 0) boardPage--; });
+    uiButton(hits, cx + 38, y, 24, 13, '›', boardPage < pages - 1 ? '#7fe0ff' : '#5a6a90',
+      () => { if (boardPage < pages - 1) boardPage++; });
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8f8fa8';
+    ctx.fillText((boardPage + 1) + ' / ' + pages, cx, y + 9);
+    y += 13;
   }
 
   if (withRank && board.rank) {
