@@ -1232,6 +1232,9 @@ let bossParts = [], bossDef = null, bossMaxHp = 0, bossBanner = 0;
 // of them come back at once. Only ever one conflict fight on the field, so one
 // list is enough — spawnBoss empties it.
 let conflictFallen = [];
+// The clock the trunks trade colours on — one timer for the whole fight, so
+// every side swaps on the same beat (see TRUNK_COLORS).
+let trunkSwapT = 0;
 // Boss sprints have no standup clock, so a patient player could kite one for
 // as long as they liked. This is the answer: not a fail state, just pressure.
 let bossClock = 0, bossEnraged = false;
@@ -1849,6 +1852,10 @@ function bossInit(e) {
     e.reviveT = 0;
     e.feat = []; e.cutFeat = 0; e.clean = false;
     e.featT = cad(e, 1.2); e.shootT = cad(e, CONFLICT_SHOOT);
+    // Like Scope Creep, a trunk does not arrive empty-handed: one feature
+    // branch is already hanging off it when the fight opens (and when a
+    // side reopens), so the immunity rule is visible before any timer fires.
+    cutFeature(e);
   }
   if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.hueT = cad(e, MTG_HUE); e.actT = cad(e, ACTION_EVERY); e.item = null; }
   if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; e.ringT = 0; }
@@ -1880,12 +1887,20 @@ function spawnBoss(n) {
   };
 
   if (def.trunks) {
-    // Spread across the same span two trunks always used, so a third branch
-    // slots in between them rather than changing where the fight opens.
+    // main opens on the left, master on the right — and mainster overhead,
+    // so three trunks read as a triangle from the first frame instead of a
+    // line. The spots match the formation slots they will hold all fight
+    // (see trunkSlot), so nobody has to march anywhere before it starts.
     const n2 = def.trunks.length;
+    const spots = n2 === 3
+      ? [[0.24, 0.62], [0.76, 0.62], [0.5, 0.25]]
+      : n2 === 1 ? [[0.5, 0.5]] : [[0.24, 0.5], [0.76, 0.5]];
     def.trunks.forEach((name, i) => {
-      make(VW * (n2 === 1 ? 0.5 : 0.24 + 0.52 * i / (n2 - 1)), VH * 0.5).branch = name;
+      const e = make(VW * spots[i][0], VH * spots[i][1]);
+      e.branch = name;
+      e.hueIdx = i; // its colour of the moment — the swap clock rotates this
     });
+    trunkSwapT = TRUNK_SWAP;
   } else {
     make(VW / 2, 46);
   }
@@ -2043,9 +2058,9 @@ function openMeeting(e, secs, why) {
 }
 
 // Every trunk still standing. bossParts only ever holds live parts, so this IS
-// the live set — and writing the pincer, the rebase and the reconnect against
-// its size rather than against a single `twin` is what let a third branch drop
-// into the same fight without a second copy of any of it.
+// the live set — and writing the formation, the rebase and the reconnect
+// against its size rather than against a single `twin` is what let a third
+// branch drop into the same fight without a second copy of any of it.
 const trunks = () => bossParts.filter((b) => b.boss === 'conflict');
 
 // How long the last side standing gives you before everything you closed comes
@@ -2089,6 +2104,9 @@ function reopenTrunks(e) {
     t.branch = src.branch;   // main comes back as main
     bossParts.push(t);
   });
+  // Re-deal the colours across the full set: the fallen sides kept whatever
+  // they wore when they dropped, which by now may collide with the survivor's.
+  trunks().forEach((b, i) => { b.hueIdx = i; });
   divergeAgain();
   addFloater(e.x, e.y - 16,
     'REOPENED — ' + (back.length + 1) + ' BRANCHES DIVERGED', '#ff5a6e', true);
@@ -2257,19 +2275,26 @@ function bossBehave(e, dt, ux, uy) {
     }
     const rest = trunks().filter((o) => o !== e);
     if (!rest.length) return false; // last side standing: the ordinary seek is threat enough
-    // Pincer: each side steers for the point opposite where the others are,
-    // averaged, so they arrive from around you instead of queueing up in one
-    // blob. Backing straight off no longer keeps them all in front of you, and
-    // with three trunks the average is what spreads them across the room.
-    const ox = rest.reduce((s, o) => s + o.x, 0) / rest.length;
-    const oy = rest.reduce((s, o) => s + o.y, 0) / rest.length;
-    const tx = clamp(player.x + (player.x - ox) * 0.5, e.r, VW - e.r);
-    const ty = clamp(player.y + (player.y - oy) * 0.5, e.r, VH - e.r);
-    const gx = tx - e.x, gy = ty - e.y;
+    // Formation, not pincer: each side steers for its own compass point off
+    // you (see trunkSlot) and holds it, so the spread they spawned with never
+    // collapses into one blob — the bullying is done from a distance.
+    const slot = trunkSlot(e);
+    const gx = slot.x - e.x, gy = slot.y - e.y;
     const gd = Math.hypot(gx, gy);
     if (gd > 0.5) {
       const step = Math.min(gd, e.sp * dt);
       e.x += gx / gd * step; e.y += gy / gd * step;
+    }
+    // Walls can squeeze the slots together when you drag the formation into a
+    // corner; the spacing rule still wins over the slot.
+    for (const o of rest) {
+      const dx = e.x - o.x, dy = e.y - o.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d < CONFLICT_SEP) {
+        const push = (CONFLICT_SEP - d) * 1.5 * dt;
+        e.x = clamp(e.x + dx / d * push, e.r, VW - e.r);
+        e.y = clamp(e.y + dy / d * push, e.r, VH - e.r);
+      }
     }
     return true;
   }
@@ -2525,10 +2550,35 @@ function divergeAgain() {
 }
 
 // Trunks sitting on top of each other are rebasing onto one another and take
-// half damage until you split them up. Together with the pincer steering it
-// makes Merge Conflict a positioning fight: they want to converge on you, and
-// letting them is what makes them tanky.
+// half damage until you split them up. The formation steering keeps them
+// apart on its own, so this mostly bites in the squeeze cases — a player
+// pinned in a corner dragging every slot with them, or a reopened side
+// walking back in through the pack.
 const REBASE_DIST = 90;
+
+// Where each side stands relative to you: main holds your left, master your
+// right, mainster overhead — the same shape they spawned in. They harass from
+// that ring (cutting features, throwing letters) instead of converging into
+// one blob, so the fight stays a face-off (or a triangle) the whole way.
+const CONFLICT_RING = 150;  // slot distance out from the player
+const CONFLICT_SEP = 120;   // closer than this, trunks shove each other apart
+const TRUNK_ANGLES = [Math.PI, 0, -Math.PI / 2]; // by index in def.trunks
+function trunkSlot(e) {
+  const i = e.def && e.def.trunks ? e.def.trunks.indexOf(e.branch) : -1;
+  const a = TRUNK_ANGLES[Math.max(0, i) % TRUNK_ANGLES.length];
+  return {
+    x: clamp(player.x + Math.cos(a) * CONFLICT_RING, e.r, VW - e.r),
+    y: clamp(player.y + Math.sin(a) * CONFLICT_RING, e.r, VH - e.r),
+  };
+}
+
+// Each trunk wears its own colour — label, outline, feature tethers — and on
+// TRUNK_SWAP seconds they all trade, cyclically, so no two sides ever share
+// one. Three colours cover both rosters: with two trunks the cycle just never
+// lands two on the same entry.
+const TRUNK_COLORS = ['#7fe0ff', '#ffd23f', '#c9a8ff'];
+const TRUNK_SWAP = 7;
+const trunkColor = (e) => TRUNK_COLORS[(e.hueIdx || 0) % TRUNK_COLORS.length];
 const rebasing = (e) => e.boss === 'conflict' &&
   trunks().some((o) => o !== e && Math.hypot(e.x - o.x, e.y - o.y) < REBASE_DIST);
 
@@ -3079,6 +3129,15 @@ function update(dt) {
   // --- soft enrage: the sprint review is not going to move for you
   if (bossParts.length) {
     bossClock += dt;
+    // the trunks trade colours on a shared beat — a cyclic shift, so the set
+    // on the field is always distinct and always evenly spread
+    if (trunks().length > 1) {
+      trunkSwapT -= dt;
+      if (trunkSwapT <= 0) {
+        trunkSwapT = TRUNK_SWAP;
+        for (const b of trunks()) b.hueIdx = ((b.hueIdx || 0) + 1) % TRUNK_COLORS.length;
+      }
+    }
     if (bossClock > BOSS_ENRAGE_AT && !bossEnraged) {
       bossEnraged = true;
       for (const b of bossParts) {
@@ -3454,12 +3513,13 @@ function draw() {
       ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
     }
     // a feature branch wears its name, so the fiction is legible on the field
+    // — in its parent trunk's colour, so WHOSE branch it is reads too
     if (e.branchName) {
       ctx.textAlign = 'center';
       ctx.font = '6px monospace';
       ctx.fillStyle = '#080c18';
       ctx.fillText(e.branchName, Math.round(e.x) + 1, ey + h + 8);
-      ctx.fillStyle = '#7fe0ff';
+      ctx.fillStyle = e.featOf ? trunkColor(e.featOf) : '#7fe0ff';
       ctx.fillText(e.branchName, Math.round(e.x), ey + h + 7);
     }
     // an action item wears its clock — the deadline is the mechanic, so it has
@@ -3748,6 +3808,10 @@ function drawBossTells(e, ex, ey, w, h) {
     }
   }
   if (e.boss === 'conflict') {
+    // each side wears its colour of the moment — the swap clock trades them
+    // around, and outline + label + tethers all say it at once
+    ctx.strokeStyle = trunkColor(e);
+    ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
     // one link per pair of trunks; each lights up while those two are close
     // enough to cover each other — the half-damage state, drawn before the HP
     // bar stalls. With three branches the lit triangle is the whole tell.
@@ -3758,10 +3822,11 @@ function drawBossTells(e, ex, ey, w, h) {
       ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(o.x, o.y); ctx.stroke();
     }
     // feature branches: a dashed tether, deliberately unlike the solid trunk
-    // link, so "cut from this side" reads at a glance
+    // link, in the trunk's own colour — "cut from THIS side" at a glance
     ctx.save();
     ctx.setLineDash([2, 3]);
-    ctx.strokeStyle = 'rgba(127,224,255,0.6)';
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = trunkColor(e);
     for (const f of e.feat) {
       if (!enemies.includes(f)) continue;
       ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(f.x, f.y); ctx.stroke();
@@ -3770,7 +3835,7 @@ function drawBossTells(e, ex, ey, w, h) {
     // which trunk this is, and whether it still has branches to close
     ctx.textAlign = 'center';
     ctx.font = 'bold 8px monospace';
-    ctx.fillStyle = e.clean ? '#3fe08a' : '#7fe0ff';
+    ctx.fillStyle = e.clean ? '#3fe08a' : trunkColor(e);
     ctx.fillText(e.branch || 'main', cx, ey - 6);
     if (e.clean) {
       ctx.font = '7px monospace';
