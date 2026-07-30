@@ -1422,7 +1422,7 @@ const BOARD_TIMEOUT = 6000;
 let board = null;    // null | { status: 'sending' | 'ok' | 'error', rows, rank }
 let boardGen = 0;    // ignores a slow reply from an earlier run
 let boardAt = -1e9;  // menuT of the last good read — the pause screen reuses it
-const BOARD_PAGE = 10; // rows per page; the API returns up to 200 runs
+const BOARD_PAGE = 8; // rows per page; the API returns up to 200 runs
 let boardPage = 0;
 
 // Read-only board, for the pause screen: the same rows the death screen draws,
@@ -1489,8 +1489,8 @@ function submitScore() {
 // Each board row carries the look its run was posted with — the same integer
 // indices this game saves locally. The server stores whatever bounded ints it
 // was sent, so every index is clamped against this build's option lists before
-// it reaches buildDevImg. Rendered once per distinct look into a 10×10 icon
-// (smoothed — nearest-neighbour at 34→10 drops whole features) and cached.
+// it reaches buildDevImg. Rendered once per distinct look into a 15×15 icon
+// (smoothed — nearest-neighbour at 34→15 drops whole features) and cached.
 const boardIcons = new Map();
 function boardIcon(o) {
   if (!o || typeof o !== 'object') return null;
@@ -1502,10 +1502,10 @@ function boardIcon(o) {
       const v = o[gr.key];
       safe[gr.key] = Number.isInteger(v) && v >= 0 && v < groupLen(gr) ? v : 0;
     }
-    c = cvOf(10, 10);
+    c = cvOf(15, 15);
     const g = c.getContext('2d');
     g.imageSmoothingEnabled = true;
-    g.drawImage(buildDevImg(safe), 0, 0, 10, 10);
+    g.drawImage(buildDevImg(safe), 0, 0, 15, 15);
     boardIcons.set(key, c);
   }
   return c;
@@ -3521,10 +3521,20 @@ function draw() {
     if (e.area) { ctx.fillStyle = AREAS[e.area].color; ctx.fillRect(-w / 2 + 1, -h / 2 + 1, w - 2, STRIPE_W); }
     ctx.restore();
 
-    // hotfixes flash orange the whole way in
+    // hotfixes flash orange the whole way in…
     if (e.type === 'hotfix' && Math.floor(t * 12) % 2 === 0) {
       ctx.strokeStyle = '#ff8a5c';
       ctx.strokeRect(ex - 1.5, ey - 1.5, w + 3, h + 3);
+    }
+    // …and wear a blinking red tag for their whole life, so the one ticket
+    // that will not wait is never mistaken for one that will
+    if (e.type === 'hotfix' && Math.floor(t * 6) % 2 === 0) {
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 6px monospace';
+      ctx.fillStyle = '#080c18';
+      ctx.fillText('hotfix', Math.round(e.x) + 1, ey - 3);
+      ctx.fillStyle = '#ff5a6e';
+      ctx.fillText('hotfix', Math.round(e.x), ey - 4);
     }
     // a feature branch wears its name, so the fiction is legible on the field
     // — in its parent trunk's colour, so WHOSE branch it is reads too
@@ -4133,7 +4143,7 @@ function uiButton(hits, x, y, w, h, label, fg, act) {
 // One button per sprint, bosses called out by name; a click drops you in.
 function drawDebugLevels() {
   debugHits.length = 0;
-  const x = 6, w = 172, rowH = 10, top = 16;
+  const x = 6, rowH = 10, top = 16;
 
   ctx.textAlign = 'left';
   ctx.font = 'bold 8px monospace';
@@ -4141,12 +4151,19 @@ function drawDebugLevels() {
   ctx.fillText('DEBUG · JUMP TO', x + 2, top - 5);
 
   ctx.font = 'bold 7px monospace';
+  // One width for the column, taken from its longest label — the boss names —
+  // so every button just encompasses its text and the right edges line up.
+  const labels = [];
+  for (let n = 1; n <= DEBUG_MAX_SPRINT; n++) {
+    labels.push(n % 4 === 0
+      ? 'BOSS ' + (n / 4) + ' · ' + BOSSES[(n / 4 - 1) % BOSSES.length].name
+      : n === HACK_SPRINT ? 'THE HACKATHON (FINAL)' : 'SPRINT ' + n);
+  }
+  const w = Math.ceil(Math.max(...labels.map((l) => ctx.measureText(l).width))) + 10;
   for (let n = 1; n <= DEBUG_MAX_SPRINT; n++) {
     const yy = top + (n - 1) * rowH;
     const boss = n % 4 === 0;
-    const label = boss
-      ? 'BOSS ' + (n / 4) + ' · ' + BOSSES[(n / 4 - 1) % BOSSES.length].name
-      : n === HACK_SPRINT ? 'THE HACKATHON (FINAL)' : 'SPRINT ' + n;
+    const label = labels[n - 1];
     const cur = n === sprint;
     ctx.fillStyle = boss ? 'rgba(255,90,110,0.16)' : 'rgba(63,224,138,0.10)';
     ctx.fillRect(x, yy, w, rowH - 1);
@@ -4802,15 +4819,18 @@ function drawBoard(y, withRank, hits) {
   if (!board) return y;
   const cx = VW / 2;
 
+  // Drawn at 1.5× the scale it used to be: bigger font, a 15px dev icon, and
+  // the columns spread proportionally around the same centre. The taller rows
+  // are why BOARD_PAGE is 8 — the death screen has a button row to respect.
   ctx.textAlign = 'center';
-  ctx.font = 'bold 9px monospace';
+  ctx.font = 'bold 13px monospace';
   ctx.fillStyle = '#dfe6ff';
   ctx.fillText('THE STANDUP BOARD', cx, y);
 
-  ctx.font = '8px monospace';
+  ctx.font = '12px monospace';
   if (board.status !== 'ok' || !board.rows.length) {
     ctx.fillStyle = '#8f8fa8';
-    y += 13;
+    y += 20;
     ctx.fillText(board.status === 'sending' ? (withRank ? 'posting your run…' : 'loading the board…')
       : board.status === 'error' ? (withRank ? 'board unreachable — this run was not saved' : 'board unreachable')
         : 'no runs on the board yet', cx, y);
@@ -4818,7 +4838,7 @@ function drawBoard(y, withRank, hits) {
   }
 
   // columns: rank | dev icon | name | score | when
-  const R = 204, I = 207, N = 222, S = 344, W = 452;
+  const R = 146, I = 150, N = 173, S = 356, W = 518;
   const me = playerName.toLowerCase();
   const pages = Math.ceil(board.rows.length / BOARD_PAGE);
   if (boardPage >= pages) boardPage = pages - 1; // rows shrank under the pager
@@ -4826,12 +4846,12 @@ function drawBoard(y, withRank, hits) {
   for (let i = start; i < Math.min(start + BOARD_PAGE, board.rows.length); i++) {
     const row = board.rows[i];
     const mine = String(row.name).toLowerCase() === me;
-    y += 11;
+    y += 16;
     ctx.textAlign = 'right';
     ctx.fillStyle = mine ? '#ffd23f' : '#5a6a90';
     ctx.fillText((i + 1) + '.', R, y);
     const ic = boardIcon(row.look);   // rows from before looks existed have none
-    if (ic) ctx.drawImage(ic, I, y - 8, 10, 10);
+    if (ic) ctx.drawImage(ic, I, y - 12, 15, 15);
     ctx.textAlign = 'left';
     ctx.fillStyle = mine ? '#ffd23f' : '#dfe6ff';
     ctx.fillText(String(row.name), N, y);
@@ -4843,23 +4863,23 @@ function drawBoard(y, withRank, hits) {
 
   // pager — only once the board outgrows one page
   if (pages > 1 && hits) {
-    y += 8;
-    ctx.font = 'bold 9px monospace';
-    uiButton(hits, cx - 62, y, 24, 13, '‹', boardPage > 0 ? '#7fe0ff' : '#5a6a90',
+    y += 12;
+    ctx.font = 'bold 13px monospace';
+    uiButton(hits, cx - 93, y, 36, 19, '‹', boardPage > 0 ? '#7fe0ff' : '#5a6a90',
       () => { if (boardPage > 0) boardPage--; });
-    uiButton(hits, cx + 38, y, 24, 13, '›', boardPage < pages - 1 ? '#7fe0ff' : '#5a6a90',
+    uiButton(hits, cx + 57, y, 36, 19, '›', boardPage < pages - 1 ? '#7fe0ff' : '#5a6a90',
       () => { if (boardPage < pages - 1) boardPage++; });
-    ctx.font = '8px monospace';
+    ctx.font = '12px monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#8f8fa8';
-    ctx.fillText((boardPage + 1) + ' / ' + pages, cx, y + 9);
-    y += 13;
+    ctx.fillText((boardPage + 1) + ' / ' + pages, cx, y + 14);
+    y += 19;
   }
 
   if (withRank && board.rank) {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#8f8fa8';
-    y += 15;
+    y += 22;
     ctx.fillText('this run ranks #' + board.rank, cx, y);
   }
   return y;
