@@ -1300,8 +1300,8 @@ const ENEMY_TYPES = {
 // title doesn't fit six across.
 //
 // Eight slots, and the last two are second, nastier readings of a fight you
-// have already had: THE OCTOPUS MERGE is Merge Conflict with a third branch,
-// THE CASCADING OUTAGE is the Megaoutage with a third charge and a shockwave
+// have already had: MERGE CONFLICTUS is the Merge Conflicter with a third branch,
+// CASCADING OUTAGE is the Production Outage with a third charge and a shockwave
 // at the end of each. They reuse the enemy type — and therefore every rule
 // written against `e.boss` — and differ only by the knobs below:
 //   trunks    branch names for a conflict fight; its length IS the trunk count
@@ -1310,23 +1310,23 @@ const ENEMY_TYPES = {
 //   ringAfter outage: seconds after the combo lands before one single slam
 //   hpMul     extra HP on top of the lap scaling, for a late-roster slot
 const BOSSES = [
-  { type: 'monolith', area: 'infra', color: '#8fa8d8', name: 'THE LEGACY MONOLITH', short: 'MONOLITH', tag: 'opened 2009 · nobody knows what it does' },
-  { type: 'conflict', area: 'be',    color: '#3fe08a', name: 'MERGE CONFLICT',      short: 'CONFLICT', tag: 'resolve both sides — together',
+  { type: 'monolith', area: 'infra', color: '#8fa8d8', name: 'LEGACY MONOLITH', short: 'MONOLITH', tag: 'opened 2009 · nobody knows what it does' },
+  { type: 'conflict', area: 'be',    color: '#3fe08a', name: 'MERGE CONFLICTER',      short: 'CONFLICT', tag: 'resolve both sides — together',
     trunks: ['main', 'master'] },
-  { type: 'flaky',    area: 'be',    color: '#c9a8ff', name: 'THE FLAKY TEST',      short: 'FLAKY',    tag: 'passes locally. sometimes.' },
-  { type: 'outage',   area: 'infra', color: '#ff8a5c', name: 'P0 MEGAOUTAGE',       short: 'OUTAGE',   tag: 'prod is down. everyone is watching.',
+  { type: 'flaky',    area: 'be',    color: '#c9a8ff', name: 'FLAKY TEST',      short: 'FLAKY',    tag: 'passes locally. sometimes.' },
+  { type: 'outage',   area: 'infra', color: '#ff8a5c', name: 'PRODUCTION OUTAGE',       short: 'OUTAGE',   tag: 'prod is down. everyone is watching.',
     dashes: 2, ringAfter: 0.5 },
   { type: 'screep',   area: 'fe',    color: '#ff5a6e', name: 'SCOPE CREEP',         short: 'CREEP',    tag: 'just one more little thing…' },
   // the meeting's area is a starting point only — it rotates during the fight
-  { type: 'mtgboss',  area: 'be',    color: '#b9c4dd', name: 'THE ENDLESS MEETING', short: 'MEETING',  tag: 'this could have been an email' },
-  { type: 'conflict', area: 'be',    color: '#2fe4c8', name: 'THE OCTOPUS MERGE',   short: 'OCTOPUS',  tag: 'three branches. nobody knows which is real.',
+  { type: 'mtgboss',  area: 'be',    color: '#b9c4dd', name: 'ENDLESS MEETING', short: 'MEETING',  tag: 'this could have been an email' },
+  { type: 'conflict', area: 'be',    color: '#2fe4c8', name: 'MERGE CONFLICTUS',   short: 'OCTOPUS',  tag: 'three branches. nobody knows which is real.',
     trunks: ['main', 'master', 'mainster'], hpMul: 1.3 },
-  { type: 'outage',   area: 'infra', color: '#ff5a6e', name: 'THE CASCADING OUTAGE', short: 'CASCADE', tag: 'it took the status page down with it',
+  { type: 'outage',   area: 'infra', color: '#ff5a6e', name: 'CASCADING OUTAGE', short: 'CASCADE', tag: 'it took the status page down with it',
     dashes: 3, ringEach: true, hpMul: 1.3 },
 ];
 
-// The roster has eight slots but only six distinct nightmares — the octopus is
-// still a Merge Conflict, the cascade is still a Megaoutage — and the unlock
+// The roster has eight slots but only six distinct nightmares — the Conflictus is
+// still a merge conflict, the cascade is still an outage — and the unlock
 // has always been keyed by enemy type. Counting distinct types keeps it at the
 // six it has always been, and keeps a save made before slots 7 and 8 existed
 // worth exactly what it was worth.
@@ -2494,8 +2494,8 @@ function bossBehave(e, dt, ux, uy) {
   return false;
 }
 
-// MERGE CONFLICT is two long-lived branches, `main` and `master`, that have
-// diverged — and THE OCTOPUS MERGE is the same fight with `mainster` in the
+// MERGE CONFLICTER is two long-lived branches, `main` and `master`, that have
+// diverged — and MERGE CONFLICTUS is the same fight with `mainster` in the
 // middle of it. Each keeps cutting feature branches off itself — small tickets
 // tethered to their parent by a dashed line — and while ANY feature branch is
 // still open anywhere, no trunk can be merged: letters bounce off all of them.
@@ -2515,7 +2515,7 @@ const CONFLICT_SHOOT = 3.6; // seconds between the letters a trunk throws at you
 // anywhere — so the room's total cut rate, not the per-trunk one, is what the
 // fight is balanced against. A third side cutting on the same 3.4s clock is
 // half again the work, and against an all-or-nothing rule that is not "harder",
-// it is unwinnable: measured, THE OCTOPUS MERGE sat at 3×full HP for 150s
+// it is unwinnable: measured, MERGE CONFLICTUS sat at 3×full HP for 150s
 // while a god-mode player did nothing but farm branches, because the window
 // where every branch was closed at once never arrived. Stretching the per-trunk
 // interval by the trunk count keeps the aggregate exactly where Merge Conflict
@@ -2982,7 +2982,7 @@ function update(dt) {
       // open branches. This is aim, not mercy: it stays the fallback when
       // there is nothing else on screen, so against The Flaky Test the chair
       // sits pointed at it through FAIL and auto-shoot feeds it, exactly as it
-      // should. Without the skip, THE OCTOPUS MERGE is a hard lock — measured:
+      // should. Without the skip, MERGE CONFLICTUS is a hard lock — measured:
       // the chair tracks an immune trunk while the branches, the only killable
       // thing in the room, go unshot forever and the fight never progresses.
       if (bossBlocks(e)) { if (dd < sd) { sd = dd; shielded = e; } continue; }
@@ -4429,7 +4429,7 @@ function drawDiff() {
   // One chip per distinct boss, lit in its own colour once that one has gone
   // down. The roster's last two slots are second readings of a fight already
   // on this strip, so they share its chip rather than adding one — resolving
-  // THE OCTOPUS MERGE is resolving a MERGE CONFLICT, and the unlock says six.
+  // MERGE CONFLICTUS is resolving a MERGE CONFLICTER, and the unlock says six.
   ctx.font = '7px monospace';
   let tw = 0;
   const chips = BOSS_TYPES.map((ty) => BOSSES.find((b) => b.type === ty));
