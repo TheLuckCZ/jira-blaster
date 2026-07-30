@@ -72,7 +72,7 @@ spot, so you never have to die to restyle.
 | D / A | Spin the chair clockwise / counter-clockwise at 180°/s (hold; both at once = facing locked) |
 | 1 / 2 / 3 | Switch language: **HTML** (red) / **JAVA** (green) / **BASH** (blue) — recolors your letters, and the laptop screen on your chair, so what you're firing is readable without looking at the HUD |
 | I | Toggle **auto-aim** — the chair tracks the nearest ticket it can actually damage; A/D override it |
-| O | Toggle **auto-shoot** — fire continuously by itself, holding fire when the only thing in front of you is immune |
+| O | Toggle **auto-shoot** — on or off, nothing else: it fires continuously and never holds fire for you |
 | Space | Fire along the current facing (hold for the full letter-stream) |
 | Click / tap | Also fires |
 | P / Esc | Pause ("in a meeting") |
@@ -214,12 +214,21 @@ type — one glance is full information:
   and bosses take half of that again. Epics pass their area to the Stories they
   split into.
 - **Assists are taxed:** auto-aim / auto-shoot (I / O) work, but score earned
-  with either enabled is ×0.6. CLAUDELIKE forbids them outright. Auto-aim skips
-  anything inside an immune window — every one of those windows exists to point
-  you at something else — but keeps *facing* a shielded boss when there's
-  nothing else on screen, so the chair is already aimed when the window opens.
-  Auto-shoot holds fire for exactly that case: feeding The Flaky Test is how
-  you lose it, and an assist should not lose it for you.
+  with either enabled is ×0.6. CLAUDELIKE forbids them outright.
+- **Auto-shoot is on or off and nothing else.** It never holds fire for an
+  immune window, and it is deliberately not protected from The Flaky Test — so
+  with it on, the assist feeds the boss through every FAIL and the fight takes
+  roughly **1.7× longer** than managing the trigger yourself. That is the point:
+  an assist that quietly plays the immune windows for you teaches you nothing,
+  and CLAUDELIKE takes the assists away entirely. The trigger discipline you
+  need there is learned by watching that HP bar go the wrong way.
+- **Auto-aim is aim, not mercy.** It skips anything inside an immune window,
+  because every one of those windows exists to point you at something else —
+  the scope, the attendees, the open branches — and without that, THE OCTOPUS
+  MERGE is a hard lock: the chair tracks an immune trunk while the branches,
+  the only killable thing in the room, go unshot forever. It still *faces* a
+  shielded boss when nothing else is on screen, which is exactly why auto-shoot
+  can feed the Flaky Test.
 - **Chain:** kills within 1.2s of each other build a ×1→×8 multiplier.
   Getting hit resets it to ×1 — and the ticket that hit you keeps coming
   (only hotfixes burn out on impact).
@@ -256,7 +265,7 @@ hackathon exactly as the roster runs out.
 | --- | --- | --- |
 | 4 | **THE LEGACY MONOLITH** | Huge, slow, enormous HP. Its area stripe **rotates FE→BE→INFRA every 3.2s**, so the ×2 matchup keeps moving and you must keep switching 1/2/3. **Sheds tech debt** — Bugs on a timer *and* every seventh of its HP. It can't reach you, so it **throws the stack trace**: a ring of 9 glyphs fired outward, a glow and a pager tone ahead of it. That ring now lands **every 2s instead of every 4** — the reason the fight has geometry, at twice the rate. And it **wakes up** — glacial at full HP, better than twice that speed as it comes apart. |
 | 8 | **MERGE CONFLICT** | Two diverged trunks, **`main`** and **`master`**, linked by a solid line. Each keeps **cutting feature branches** — small tickets on dashed tethers, named `feat/…` and `fix/…` — and while *any* branch is open anywhere, **neither trunk can be merged**. Close one side's branches and it goes **CLEAN** and stops cutting, which is what makes the work finite: clear one, then the other, and only then are the trunks killable. They **pincer**, and within 90px they are **rebasing** at **half damage**. Drop one and the reconnect countdown starts on the last side standing — **2 seconds**, down from 3.2, with the survivor taking **×2**. Let it run out and **both diverge again**, cutting branches from scratch. Both throw letters at you throughout. |
-| 12 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on what you choose to feed it** — a letter *fired into* a FAIL window heals it **twice what that letter was worth as damage**, so a second of blind fire undoes four seconds of aimed fire. A letter already in the air when the window flipped is merely wasted; the mechanic punishes your trigger, not your flight time. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**. Every **second** failure it **retries somewhere else** — a ~225px hop, two thirds further than before and most of the room's height, swinging it *around* you rather than away — and **every retry re-runs on a different stack**, rotating the language that hurts it. Land far and it does not get a rest: past 90px it stops kiting and comes back, sprinting at 2.4× through the immune half where it costs you nothing you could have shot. |
+| 12 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on what you choose to feed it** — a letter *fired into* a FAIL window heals it **twice what that letter was worth as damage**, so a second of blind fire undoes four seconds of aimed fire. A letter already in the air when the window flipped is merely wasted; the mechanic punishes your trigger, not your flight time. Auto-shoot does not save you from this, on purpose: this is the boss that teaches you to hold Space yourself. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**. Every **second** failure it **retries somewhere else** — a ~225px hop, two thirds further than before and most of the room's height, swinging it *around* you rather than away — and **every retry re-runs on a different stack**, rotating the language that hurts it. Land far and it does not get a rest: past 90px it stops kiting and comes back, sprinting at 2.4× through the immune half where it costs you nothing you could have shot. |
 | 16 | **P0 MEGAOUTAGE** | **aim → dash → re-aim → dash → down.** Two chained charges, each re-reading where you actually are, so one sidestep no longer settles it. Then it goes down and the incident window opens: **×2 damage** — but half a second into that window it **slams the room**, a ring of thrown code out of the thing that has just stopped moving, drawn as a collapsing circle before it lets go. The route it took **stays on fire** — a long fight slowly costs you the room rather than only the moment. |
 | 20 | **SCOPE CREEP** | **Armoured by its own scope.** It **arrives already loaded** — 2 attachments on EASY, 3 on NORMAL, 4 on HARD, 5 on CLAUDELIKE — so the fight opens on a strip, not a free shot. Every 2.6s it buds another ("…and a dark mode"); attachments ride the rim and move as one body with it, and while a single one is attached **the boss cannot be damaged from any angle**. So the fight is never a damage race: strip the scope, then burn it in the window. Closing the last attachment resets the growth clock in full, so the window is guaranteed rather than lucky. Up to 5 attached at once, and it throws requirement docs — **three at a time** now, not two — the whole while. On death it splits into everything it accreted. |
 | 24 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters**, and **nothing opens it on its own any more**. It assigns you an **ACTION ITEM**: a tagged attendee on a dashed tether with a **visible 4s clock**. Close it in time and the chair actually looks up — the agenda opens for 2s. Let the clock run out and the meeting **takes the time back**: it heals 6% of its HP, says something about circling back, and books another. Resolving any attendee within 60px still derails it, opportunistically. **Mandatory attendance** — stand inside the ring drawn on the floor and it drags you into the room. **The agenda changes colour every 4.5s**, and the attendees it calls in are always the **other two** areas — so the language that clears your action item is never the language that hurts the room, and the window you earned costs you a switch to use. Past half HP it calls attendees two at a time. |

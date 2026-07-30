@@ -2877,7 +2877,6 @@ function update(dt) {
   // chair spin: D = clockwise, A = counter-clockwise; both held = facing
   // locked. With auto-aim on, the chair tracks the nearest ticket unless
   // A/D override. CHAIR_TURN stays the committed turn rate either way.
-  p.aimShielded = false;   // set below: the assist is facing something immune
   if (keys['a'] || keys['d']) {
     const spin = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
     p.angle += spin * CHAIR_TURN * dt;
@@ -2890,16 +2889,18 @@ function update(dt) {
       // aim past it at the blocker, which is what's actually in the way.
       if (e.blockedBy && enemies.includes(e.blockedBy)) continue;
       const dd = (e.x - p.x) * (e.x - p.x) + (e.y - p.y) * (e.y - p.y);
-      // A boss inside its immune window is the same situation, and every one of
-      // those windows exists to point you at something else: the scope, the
-      // attendees, the open branches. So it loses the lock to anything that can
-      // actually be hit — but it stays the FALLBACK, because dropping the aim
-      // entirely every FAIL spends half the next window turning back around.
-      // Facing it is free; firing at it is not, which is what aimShielded is.
+      // A boss inside its immune window is the same situation: it loses the
+      // lock to anything that CAN be hit, because every one of those windows
+      // exists to point you at something else — the scope, the attendees, the
+      // open branches. This is aim, not mercy: it stays the fallback when
+      // there is nothing else on screen, so against The Flaky Test the chair
+      // sits pointed at it through FAIL and auto-shoot feeds it, exactly as it
+      // should. Without the skip, THE OCTOPUS MERGE is a hard lock — measured:
+      // the chair tracks an immune trunk while the branches, the only killable
+      // thing in the room, go unshot forever and the fight never progresses.
       if (bossBlocks(e)) { if (dd < sd) { sd = dd; shielded = e; } continue; }
       if (dd < bd) { bd = dd; best = e; }
     }
-    p.aimShielded = !best && !!shielded;
     const tgt = best || shielded;
     if (tgt) {
       const want = Math.atan2(tgt.y - p.y, tgt.x - p.x);
@@ -2915,14 +2916,15 @@ function update(dt) {
   comboT = Math.max(0, comboT - dt);
   if (comboT === 0) combo = 1;
 
-  // --- firing: Space, click, or the auto-shoot assist. The assist holds fire
-  // when the only thing the chair can see is inside an immune window: that
-  // letter is wasted, and into The Flaky Test it is worse than wasted — it
-  // heals, at twice what the letter was worth, so an assisted player would
-  // out-heal their own damage and the fight would never end. Holding Space
-  // still lets you make that mistake yourself; that part is the boss.
+  // --- firing: Space, click, or the auto-shoot assist. Auto-shoot is on or
+  // off and nothing else — it does NOT hold fire for immune windows, and it
+  // deliberately does not protect you from The Flaky Test, which heals on what
+  // you feed it. An assist that quietly plays the immune windows for you is
+  // teaching you nothing, and CLAUDELIKE takes the assists away entirely: the
+  // trigger discipline you need there has to be learned somewhere, and it is
+  // learned by watching that HP bar go the wrong way and reaching for Space.
   p.fireCd -= dt;
-  if ((mouse.down || keys[' '] || (autoShoot && !p.aimShielded)) && p.fireCd <= 0) {
+  if ((mouse.down || keys[' '] || autoShoot) && p.fireCd <= 0) {
     fire();
     p.fireCd = 1 / (p.rapidT > 0 ? 16 : 8);
   }
