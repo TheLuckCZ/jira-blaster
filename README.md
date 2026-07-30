@@ -71,8 +71,8 @@ spot, so you never have to die to restyle.
 | Arrow keys | Scoot the chair (it drifts — office-chair physics) |
 | D / A | Spin the chair clockwise / counter-clockwise at 180°/s (hold; both at once = facing locked) |
 | 1 / 2 / 3 | Switch language: **HTML** (red) / **JAVA** (green) / **BASH** (blue) — recolors your letters, and the laptop screen on your chair, so what you're firing is readable without looking at the HUD |
-| I | Toggle **auto-aim** — the chair tracks the nearest ticket by itself; A/D override it |
-| O | Toggle **auto-shoot** — fire continuously by itself |
+| I | Toggle **auto-aim** — the chair tracks the nearest ticket it can actually damage; A/D override it |
+| O | Toggle **auto-shoot** — fire continuously by itself, holding fire when the only thing in front of you is immune |
 | Space | Fire along the current facing (hold for the full letter-stream) |
 | Click / tap | Also fires |
 | P / Esc | Pause ("in a meeting") |
@@ -114,12 +114,17 @@ isn't on one). All relative to NORMAL, with "bigger = worse for you" — which i
 why swarm and boss cadence are displayed inverted, since the stored values are
 intervals and nobody reads an interval.
 
-| | Cups | Wrong tech | Clock | Swarm | Ticket speed | Boss cadence | SP |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **EASY** | 5 | ×1.5 | ×1.35 | ×0.77 | ×0.85 | ×0.8 | ×0.7 |
-| **NORMAL** | 3 | ×1 | ×1 | ×1 | ×1 | ×1 | ×1 |
-| **HARD** | 2 | ×0.75 | ×0.82 | ×1.28 | ×1.12 | ×1.18 | ×1.5 |
-| **CLAUDELIKE** | 1 | ×0.5 | ×0.7 | ×1.61 | ×1.25 | ×1.39 | ×2.5 |
+| | Cups | Wrong tech | Clock | Swarm | Ticket speed | Boss cadence | Scope | SP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **EASY** | 5 | ×1.5 | ×1.35 | ×0.77 | ×0.85 | ×0.8 | 2 glued | ×0.7 |
+| **NORMAL** | 3 | ×1 | ×1 | ×1 | ×1 | ×1 | 3 glued | ×1 |
+| **HARD** | 2 | ×0.75 | ×0.82 | ×1.28 | ×1.12 | ×1.18 | 4 glued | ×1.5 |
+| **CLAUDELIKE** | 1 | ×0.5 | ×0.7 | ×1.61 | ×1.25 | ×1.39 | 5 glued | ×2.5 |
+
+**Scope** is the one boss-specific knob on the sheet: how much scope is already
+glued to Scope Creep when it arrives. It earns its place because that fight
+opens on a strip rather than a shot, and how long that strip takes *is* the
+difficulty.
 
 **NORMAL is every multiplier at 1** — the game exactly as it shipped before
 this screen existed, so old high scores still mean what they meant. A *matched*
@@ -131,9 +136,12 @@ was built for exactly this (the same one laps and the soft enrage use).
 
 **CLAUDELIKE is locked** until all six bosses have been resolved **on HARD** —
 Easy and Normal clears don't count, and neither do debug runs (the same rule
-the high score already follows). The screen shows one chip per boss, lit in its
-own colour once that one has gone down, so the remaining work is visible.
-Progress lives in `localStorage` under `jiraBlasterBossesHard`.
+the high score already follows). Six, not eight: the unlock is keyed by enemy
+type, and the roster's last two slots are second readings of a fight already on
+the strip, so they share its chip. The screen shows one chip per distinct boss,
+lit in its own colour once that one has gone down, so the remaining work is
+visible. Progress lives in `localStorage` under `jiraBlasterBossesHard`, and a
+save made before slots 7 and 8 existed is still worth exactly what it was.
 
 Resolving a boss says which happened — `LOGGED ON HARD — 3/6`, or
 `DEBUG RUN — NOT LOGGED` / `ONLY HARD COUNTS — NOT LOGGED` — because silence
@@ -206,7 +214,12 @@ type — one glance is full information:
   and bosses take half of that again. Epics pass their area to the Stories they
   split into.
 - **Assists are taxed:** auto-aim / auto-shoot (I / O) work, but score earned
-  with either enabled is ×0.6. CLAUDELIKE forbids them outright.
+  with either enabled is ×0.6. CLAUDELIKE forbids them outright. Auto-aim skips
+  anything inside an immune window — every one of those windows exists to point
+  you at something else — but keeps *facing* a shielded boss when there's
+  nothing else on screen, so the chair is already aimed when the window opens.
+  Auto-shoot holds fire for exactly that case: feeding The Flaky Test is how
+  you lose it, and an assist should not lose it for you.
 - **Chain:** kills within 1.2s of each other build a ×1→×8 multiplier.
   Getting hit resets it to ×1 — and the ticket that hit you keeps coming
   (only hotfixes burn out on impact).
@@ -234,21 +247,32 @@ burns out, which is what tells it apart from the steady orange of ground the
 Megaoutage has already set on fire. You cannot shoot a stack trace down; the
 only answer is to not be standing there.
 
+The roster runs **eight** slots, and the last two are second, nastier readings
+of a fight you have already had — same enemy, same rules, one more of the thing
+that made it hard. One full lap is therefore sprints 4→32, landing you at the
+hackathon exactly as the roster runs out.
+
 | # | Boss | The fight |
 | --- | --- | --- |
-| 4 | **THE LEGACY MONOLITH** | Huge, slow, enormous HP. Its area stripe **rotates FE→BE→INFRA every 3.2s**, so the ×2 matchup keeps moving and you must keep switching 1/2/3. **Sheds tech debt** — Bugs on a timer *and* every seventh of its HP. It can't reach you, so it **throws the stack trace**: a ring of 9 glyphs fired outward, a glow and a pager tone ahead of it. And it **wakes up** — glacial at full HP, better than twice that speed as it comes apart. |
-| 8 | **SCOPE CREEP** | **Armoured by its own scope.** Every 2.6s it buds a ticket that stays **glued to its edge** ("…and a dark mode") — attachments ride the rim and move as one body with it, and while a single one is attached **the boss cannot be damaged from any angle**. So the fight is never a damage race: strip the scope, then burn it in the window. Closing the last attachment resets the growth clock in full, so the window is guaranteed rather than lucky. Up to 5 attached at once, and it throws requirement docs at you the whole time. On death it splits into everything it accreted. |
-| 12 | **MERGE CONFLICT** | Two diverged trunks, **`main`** and **`master`**, linked by a solid line. Each keeps **cutting feature branches** — small tickets on dashed tethers, named `feat/…` and `fix/…` — and while *any* branch is open anywhere, **neither trunk can be merged**. Close one side's branches and it goes **CLEAN** and stops cutting, which is what makes the work finite: clear one, then the other, and only then are the trunks killable. They **pincer**, and within 90px they are **rebasing** at **half damage**. Kill one and the reconnect countdown starts (survivor takes **×2**) — let it run out and **both diverge again**, cutting branches from scratch. Both throw letters at you throughout. |
-| 16 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters**. It starts closed, and the window is something you **cause**: resolve an attendee right next to it (within 60px) and the room looks up for 2.2s. Left alone it only loses its own thread every 6s, briefly. **Mandatory attendance** — stand inside the ring drawn on the floor and it drags you into the room. **The agenda changes colour every 4.5s**, and the attendees it calls in are always the **other two** areas — so the language that clears a path to the room is never the language that hurts it, and the window costs you a switch to use. Past half HP it calls attendees two at a time. |
-| 20 | **P0 MEGAOUTAGE** | **aim → dash → re-aim → dash → down.** Two chained charges, each re-reading where you actually are, so one sidestep no longer settles it. Then it goes down and the incident window opens: **×2 damage**. The route it took **stays on fire** — a long fight slowly costs you the room rather than only the moment. |
-| 24 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on blind fire** — every letter you spray into FAIL heals it, so holding the trigger through the immune window is how you lose. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**, making the damage window a chase and the immune window a dodge. Every **second** failure it just **retries somewhere else** — a ~135px hop that swings it *around* you rather than away, so it lands on a completely different side of the room while staying inside the fight. |
+| 4 | **THE LEGACY MONOLITH** | Huge, slow, enormous HP. Its area stripe **rotates FE→BE→INFRA every 3.2s**, so the ×2 matchup keeps moving and you must keep switching 1/2/3. **Sheds tech debt** — Bugs on a timer *and* every seventh of its HP. It can't reach you, so it **throws the stack trace**: a ring of 9 glyphs fired outward, a glow and a pager tone ahead of it. That ring now lands **every 2s instead of every 4** — the reason the fight has geometry, at twice the rate. And it **wakes up** — glacial at full HP, better than twice that speed as it comes apart. |
+| 8 | **MERGE CONFLICT** | Two diverged trunks, **`main`** and **`master`**, linked by a solid line. Each keeps **cutting feature branches** — small tickets on dashed tethers, named `feat/…` and `fix/…` — and while *any* branch is open anywhere, **neither trunk can be merged**. Close one side's branches and it goes **CLEAN** and stops cutting, which is what makes the work finite: clear one, then the other, and only then are the trunks killable. They **pincer**, and within 90px they are **rebasing** at **half damage**. Drop one and the reconnect countdown starts on the last side standing — **2 seconds**, down from 3.2, with the survivor taking **×2**. Let it run out and **both diverge again**, cutting branches from scratch. Both throw letters at you throughout. |
+| 12 | **THE FLAKY TEST** | Blinks **PASS** (green, hittable) / **FAIL** (red, immune). **It feeds on what you choose to feed it** — a letter *fired into* a FAIL window heals it **twice what that letter was worth as damage**, so a second of blind fire undoes four seconds of aimed fire. A letter already in the air when the window flipped is merely wasted; the mechanic punishes your trigger, not your flight time. Its pursuit is inverted: it **backs off while you can hit it and hunts you while you can't**. Every **second** failure it **retries somewhere else** — a ~225px hop, two thirds further than before and most of the room's height, swinging it *around* you rather than away — and **every retry re-runs on a different stack**, rotating the language that hurts it. Land far and it does not get a rest: past 90px it stops kiting and comes back, sprinting at 2.4× through the immune half where it costs you nothing you could have shot. |
+| 16 | **P0 MEGAOUTAGE** | **aim → dash → re-aim → dash → down.** Two chained charges, each re-reading where you actually are, so one sidestep no longer settles it. Then it goes down and the incident window opens: **×2 damage** — but half a second into that window it **slams the room**, a ring of thrown code out of the thing that has just stopped moving, drawn as a collapsing circle before it lets go. The route it took **stays on fire** — a long fight slowly costs you the room rather than only the moment. |
+| 20 | **SCOPE CREEP** | **Armoured by its own scope.** It **arrives already loaded** — 2 attachments on EASY, 3 on NORMAL, 4 on HARD, 5 on CLAUDELIKE — so the fight opens on a strip, not a free shot. Every 2.6s it buds another ("…and a dark mode"); attachments ride the rim and move as one body with it, and while a single one is attached **the boss cannot be damaged from any angle**. So the fight is never a damage race: strip the scope, then burn it in the window. Closing the last attachment resets the growth clock in full, so the window is guaranteed rather than lucky. Up to 5 attached at once, and it throws requirement docs — **three at a time** now, not two — the whole while. On death it splits into everything it accreted. |
+| 24 | **THE ENDLESS MEETING** | A wall-sized invite that **blocks your letters**, and **nothing opens it on its own any more**. It assigns you an **ACTION ITEM**: a tagged attendee on a dashed tether with a **visible 4s clock**. Close it in time and the chair actually looks up — the agenda opens for 2s. Let the clock run out and the meeting **takes the time back**: it heals 6% of its HP, says something about circling back, and books another. Resolving any attendee within 60px still derails it, opportunistically. **Mandatory attendance** — stand inside the ring drawn on the floor and it drags you into the room. **The agenda changes colour every 4.5s**, and the attendees it calls in are always the **other two** areas — so the language that clears your action item is never the language that hurts the room, and the window you earned costs you a switch to use. Past half HP it calls attendees two at a time. |
+| 28 | **THE OCTOPUS MERGE** | Merge Conflict with a third trunk: **`main`**, **`master`** and **`mainster`**, half again the HP, and the same all-or-nothing rule — no trunk is merge-able while any branch is open anywhere. Each side cuts on a **stretched clock** so three trunks produce the same branches per second two did; the extra work is 9 branches to close instead of 6, not a faster treadmill. The rebase links now draw a lit triangle. **The countdown only starts when one side is left standing** — dropping the first two buys you nothing but a shorter list — and if it beats you, **all three reopen at once**, off different walls, and every side diverges again. |
+| 32 | **THE CASCADING OUTAGE** | The Megaoutage with a **third** charge and no mercy at the end of any of them: it **slams the room after every dash**, three rings in one combo, each fired where that charge stopped — which is where you were standing when it aimed. The charge line is the telegraph; the ring is the consequence of ignoring it. Burning ground the whole way, half again the HP, and the incident window still pays **×2** if you can reach it. |
 
-The roster then cycles — sprint 28 is the Monolith again — and a full lap does
+The roster then cycles — sprint 36 is the Monolith again — and a full lap does
 more than pad HP. Alongside **+55% HP and payout**, every timer in the fight
 runs ~12% quicker, everything moves 8% faster, and the fights themselves change:
-Scope Creep grows eight times instead of six, the Outage links a **third** dash,
-the Monolith sheds debt in pairs. A boss past the first lap also pours a second
-coffee when it dies.
+Scope Creep grows eight times instead of six, both Outages link **one more**
+dash, the Monolith sheds debt in pairs. A boss past the first lap also pours a
+second coffee when it dies.
+
+The **CLAUDELIKE unlock still costs six**, not eight: the octopus is a Merge
+Conflict and the cascade is a Megaoutage, so they share those chips. Every one
+of the six is reachable inside the first six slots — sprints 4 through 24.
 
 And no boss lets you kite it forever. Boss sprints have no clock, so after
 **75 seconds** the fight stops being polite — everything speeds up and every

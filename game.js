@@ -1227,6 +1227,11 @@ const STRIPE_W = 3;
 // The boss fight in progress: its live parts (Merge Conflict has two), the
 // roster entry driving the name/colour, and the title card's fade timer.
 let bossParts = [], bossDef = null, bossMaxHp = 0, bossBanner = 0;
+// Trunks a Merge Conflict has lost so far, newest last. They are closed, not
+// resolved: if the reconnect countdown on the last side standing runs out, all
+// of them come back at once. Only ever one conflict fight on the field, so one
+// list is enough — spawnBoss empties it.
+let conflictFallen = [];
 // Boss sprints have no standup clock, so a patient player could kite one for
 // as long as they liked. This is the answer: not a fail state, just pressure.
 let bossClock = 0, bossEnraged = false;
@@ -1290,18 +1295,42 @@ const ENEMY_TYPES = {
 // The roster cycles, and each full lap makes them tougher.
 // `short` is the name on the difficulty screen's unlock chips, where the full
 // title doesn't fit six across.
+//
+// Eight slots, and the last two are second, nastier readings of a fight you
+// have already had: THE OCTOPUS MERGE is Merge Conflict with a third branch,
+// THE CASCADING OUTAGE is the Megaoutage with a third charge and a shockwave
+// at the end of each. They reuse the enemy type — and therefore every rule
+// written against `e.boss` — and differ only by the knobs below:
+//   trunks    branch names for a conflict fight; its length IS the trunk count
+//   dashes    charges the outage links into one combo before it goes down
+//   ringEach  outage: slam the room at the end of every charge
+//   ringAfter outage: seconds after the combo lands before one single slam
+//   hpMul     extra HP on top of the lap scaling, for a late-roster slot
 const BOSSES = [
   { type: 'monolith', area: 'infra', color: '#8fa8d8', name: 'THE LEGACY MONOLITH', short: 'MONOLITH', tag: 'opened 2009 · nobody knows what it does' },
+  { type: 'conflict', area: 'be',    color: '#3fe08a', name: 'MERGE CONFLICT',      short: 'CONFLICT', tag: 'resolve both sides — together',
+    trunks: ['main', 'master'] },
+  { type: 'flaky',    area: 'be',    color: '#c9a8ff', name: 'THE FLAKY TEST',      short: 'FLAKY',    tag: 'passes locally. sometimes.' },
+  { type: 'outage',   area: 'infra', color: '#ff8a5c', name: 'P0 MEGAOUTAGE',       short: 'OUTAGE',   tag: 'prod is down. everyone is watching.',
+    dashes: 2, ringAfter: 0.5 },
   { type: 'screep',   area: 'fe',    color: '#ff5a6e', name: 'SCOPE CREEP',         short: 'CREEP',    tag: 'just one more little thing…' },
-  { type: 'conflict', area: 'be',    color: '#3fe08a', name: 'MERGE CONFLICT',      short: 'CONFLICT', tag: 'resolve both sides — together' },
   // the meeting's area is a starting point only — it rotates during the fight
   { type: 'mtgboss',  area: 'be',    color: '#b9c4dd', name: 'THE ENDLESS MEETING', short: 'MEETING',  tag: 'this could have been an email' },
-  { type: 'outage',   area: 'infra', color: '#ff8a5c', name: 'P0 MEGAOUTAGE',       short: 'OUTAGE',   tag: 'prod is down. everyone is watching.' },
-  { type: 'flaky',    area: 'be',    color: '#c9a8ff', name: 'THE FLAKY TEST',      short: 'FLAKY',    tag: 'passes locally. sometimes.' },
+  { type: 'conflict', area: 'be',    color: '#2fe4c8', name: 'THE OCTOPUS MERGE',   short: 'OCTOPUS',  tag: 'three branches. nobody knows which is real.',
+    trunks: ['main', 'master', 'mainster'], hpMul: 1.3 },
+  { type: 'outage',   area: 'infra', color: '#ff5a6e', name: 'THE CASCADING OUTAGE', short: 'CASCADE', tag: 'it took the status page down with it',
+    dashes: 3, ringEach: true, hpMul: 1.3 },
 ];
 
+// The roster has eight slots but only six distinct nightmares — the octopus is
+// still a Merge Conflict, the cascade is still a Megaoutage — and the unlock
+// has always been keyed by enemy type. Counting distinct types keeps it at the
+// six it has always been, and keeps a save made before slots 7 and 8 existed
+// worth exactly what it was worth.
+const BOSS_TYPES = [...new Set(BOSSES.map((b) => b.type))];
+
 // ---------------------------------------------------------------- difficulty
-// Eight knobs, each applied at exactly one existing choke point, so a row here
+// Nine knobs, each applied at exactly one existing choke point, so a row here
 // is the whole definition of a difficulty and nothing is hidden in the code:
 //   cups    starting coffee (startGame + jumpToSprint)
 //   off     damage for a letter in the WRONG language (bullets-vs-enemies).
@@ -1314,19 +1343,23 @@ const BOSSES = [
 //           chases are tuned against the chair's top speed, and the fights have
 //           a cadence knob of their own that was built for this.
 //   cad     boss attack cadence (smaller = it acts more often)
+//   scope0  how much scope is ALREADY glued to Scope Creep when it arrives.
+//           The one boss-specific knob on the sheet, and it earns the place:
+//           that fight opens on a strip rather than on a shot, so how long the
+//           strip takes IS the difficulty of it.
 //   sp      score multiplier — the board has to compare like with like
 //   assists whether auto-aim / auto-shoot may be switched on at all
 // NORMAL is every multiplier at 1 and 3 cups: the game exactly as it shipped,
 // so scores set before this screen existed still mean what they meant.
 const DIFFS = [
   { key: 'easy',   name: 'EASY',   tag: 'we own the schedule',
-    cups: 5, off: 1.5,  dead: 1.35, dens: 1.3,  speed: 0.85, cad: 1.25, sp: 0.7, assists: true,  color: '#3fe08a' },
+    cups: 5, off: 1.5,  dead: 1.35, dens: 1.3,  speed: 0.85, cad: 1.25, sp: 0.7, scope0: 2, assists: true,  color: '#3fe08a' },
   { key: 'normal', name: 'NORMAL', tag: 'the schedule owns us',
-    cups: 3, off: 1,    dead: 1,    dens: 1,    speed: 1,    cad: 1,    sp: 1,   assists: true,  color: '#7fe0ff' },
+    cups: 3, off: 1,    dead: 1,    dens: 1,    speed: 1,    cad: 1,    sp: 1,   scope0: 3, assists: true,  color: '#7fe0ff' },
   { key: 'hard',   name: 'HARD',   tag: 'the client owns the schedule',
-    cups: 2, off: 0.75, dead: 0.82, dens: 0.78, speed: 1.12, cad: 0.85, sp: 1.5, assists: true,  color: '#ff8a5c' },
+    cups: 2, off: 0.75, dead: 0.82, dens: 0.78, speed: 1.12, cad: 0.85, sp: 1.5, scope0: 4, assists: true,  color: '#ff8a5c' },
   { key: 'claudelike', name: 'CLAUDELIKE', tag: 'one cup. no assists. ship it.',
-    cups: 1, off: 0.5,  dead: 0.7,  dens: 0.62, speed: 1.25, cad: 0.72, sp: 2.5, assists: false, color: '#8a63ff', locked: true },
+    cups: 1, off: 0.5,  dead: 0.7,  dens: 0.62, speed: 1.25, cad: 0.72, sp: 2.5, scope0: 5, assists: false, color: '#8a63ff', locked: true },
 ];
 const HARD_IDX = 2; // only a run at this level or above earns the unlock
 
@@ -1336,7 +1369,7 @@ const HARD_IDX = 2; // only a run at this level or above earns the unlock
 // same rule the high score already follows.
 let bossesDown = new Set();
 try { bossesDown = new Set(JSON.parse(localStorage.getItem('jiraBlasterBossesHard') || '[]')); } catch (e) { /* private mode */ }
-const allBossesDown = () => BOSSES.every((b) => bossesDown.has(b.type));
+const allBossesDown = () => BOSS_TYPES.every((ty) => bossesDown.has(ty));
 // Debug mode opens CLAUDELIKE so it can be played and tuned without grinding
 // six HARD bosses first. It does NOT earn it: recordBossKill still refuses to
 // log anything in a debug run, so switching debug off drops you straight back
@@ -1353,9 +1386,9 @@ function recordBossKill(e) {
   if (diffIdx < HARD_IDX) { addFloater(e.x, at, 'ONLY HARD COUNTS — NOT LOGGED', '#8f8fa8'); return; }
   bossesDown.add(type);
   try { localStorage.setItem('jiraBlasterBossesHard', JSON.stringify([...bossesDown])); } catch (err) { /* private mode */ }
-  const done = BOSSES.filter((b) => bossesDown.has(b.type)).length;
+  const done = BOSS_TYPES.filter((ty) => bossesDown.has(ty)).length;
   if (allBossesDown()) addFloater(e.x, at, 'CLAUDELIKE UNLOCKED!', '#8a63ff', true);
-  else addFloater(e.x, at, 'LOGGED ON HARD — ' + done + '/6', '#8a63ff');
+  else addFloater(e.x, at, 'LOGGED ON HARD — ' + done + '/' + BOSS_TYPES.length, '#8a63ff');
 }
 
 let diffIdx = 1; // NORMAL
@@ -1768,7 +1801,32 @@ const cad = (e, secs) => secs * (e.cad || 1);
 // is dodged by moving rather than out-ranged, which is what it was always
 // described as. It arrives on TRACE_PERIOD, still behind the 0.8s wind-up ring
 // — more often, but never without warning.
-const TRACE_N = 9, TRACE_SPEED = 78, TRACE_LIFE = 4.2, TRACE_PERIOD = 3.2;
+//
+// TRACE_PERIOD is the gap AFTER the wind-up, so the real cycle is period +
+// 0.8s: at 1.2 the Monolith throws a trace every 2s, twice as often as the 4s
+// it used to. The ring is the whole reason the fight has geometry, and once
+// every four seconds left far too much of the room quiet.
+const TRACE_N = 9, TRACE_SPEED = 78, TRACE_LIFE = 4.2, TRACE_PERIOD = 1.2;
+
+// A ring of thrown code fired outward from a boss's rim. The Monolith's stack
+// trace and the Megaoutage's shockwave are the same gesture at different sizes,
+// so they are the same function — one ring reads as one ring wherever it comes
+// from, which is what makes it dodgeable on sight.
+function throwRing(e, n, speed, life) {
+  const off = rnd(0, TAU);
+  for (let k = 0; k < n; k++) {
+    const a = off + TAU * k / n;
+    throwHazard(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
+      Math.cos(a) * speed, Math.sin(a) * speed, life);
+  }
+  shake += 3;
+  sfx.trace();
+}
+
+// The Megaoutage's shockwave: the same ring, tighter and shorter-lived, because
+// it goes off where the boss just landed rather than across a room it cannot
+// reach. Speed × life ≈ 230px — the blast radius of one charge, not the room.
+const OUT_RING_N = 8, OUT_RING_SPEED = 92, OUT_RING_LIFE = 2.5;
 
 // Per-boss state, set after the HP scaling in spawnBoss so thresholds match.
 // Lap and enrage land first, because every timer below is set through cad().
@@ -1782,24 +1840,29 @@ function bossInit(e) {
     e.traceT = cad(e, TRACE_PERIOD); e.traceWind = 0;
     e.spBase = e.sp; // rage scales off this — see the monolith branch in bossBehave
   }
-  if (e.boss === 'screep') { e.scope = []; e.grown = 0; e.growT = cad(e, SCOPE_FIRST); e.shootT = cad(e, SCOPE_SHOOT); }
+  if (e.boss === 'screep') {
+    e.scope = []; e.grown = 0; e.growT = cad(e, SCOPE_FIRST); e.shootT = cad(e, SCOPE_SHOOT);
+    // the scope it was already carrying when it reached you
+    for (let k = 0; k < Math.min(SCOPE_MAX, curDiff().scope0); k++) growScope(e, true);
+  }
   if (e.boss === 'conflict') {
-    e.reviveT = 0; e.twin = null; e.revive = null;
+    e.reviveT = 0;
     e.feat = []; e.cutFeat = 0; e.clean = false;
     e.featT = cad(e, 1.2); e.shootT = cad(e, CONFLICT_SHOOT);
   }
-  if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.selfT = cad(e, 6); e.hueT = cad(e, MTG_HUE); }
-  if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; }
-  if (e.boss === 'flaky') { e.pass = true; e.phaseT = cad(e, 1.7); e.fails = 0; e.blinkT = 0; }
+  if (e.boss === 'mtgboss') { e.cycleT = 0; e.open = false; e.callT = cad(e, 3); e.hueT = cad(e, MTG_HUE); e.actT = cad(e, ACTION_EVERY); e.item = null; }
+  if (e.boss === 'outage') { e.mode = 'aim'; e.phaseT = 1.6; e.dx = 0; e.dy = 0; e.dashesLeft = outageDashes(e); e.trailT = 0; e.ringT = 0; }
+  if (e.boss === 'flaky') { e.pass = true; e.phaseT = cad(e, 1.7); e.fails = 0; e.blinkT = 0; e.failedAt = Infinity; }
 }
 
 function spawnBoss(n) {
   const step = Math.floor(n / 4) - 1;
   const def = BOSSES[step % BOSSES.length];
   const lap = Math.floor(step / BOSSES.length);
-  const mul = 1 + 0.55 * lap; // each full lap is meaner
+  const mul = (1 + 0.55 * lap) * (def.hpMul || 1); // each full lap is meaner, and a late slot starts meaner
   bossDef = def;
   bossParts = [];
+  conflictFallen = [];
   bossBanner = 2.8;
   bossClock = 0; bossEnraged = false;
 
@@ -1809,16 +1872,20 @@ function spawnBoss(n) {
     e.score = Math.round(ENEMY_TYPES[def.type].score * mul);
     e.area = def.area;
     e.lap = lap;      // read by bossInit and by the per-boss lap tweaks
+    e.def = def;      // the slot's own knobs — trunk count, dash count, shockwave
     e.spawnT = 1.4;   // long materialize — the title card plays over it
     bossInit(e);
     bossParts.push(e);
     return e;
   };
 
-  if (def.type === 'conflict') {
-    const a = make(VW * 0.24, VH * 0.5), b = make(VW * 0.76, VH * 0.5);
-    a.twin = b; b.twin = a;
-    a.branch = 'main'; b.branch = 'master';
+  if (def.trunks) {
+    // Spread across the same span two trunks always used, so a third branch
+    // slots in between them rather than changing where the fight opens.
+    const n2 = def.trunks.length;
+    def.trunks.forEach((name, i) => {
+      make(VW * (n2 === 1 ? 0.5 : 0.24 + 0.52 * i / (n2 - 1)), VH * 0.5).branch = name;
+    });
   } else {
     make(VW / 2, 46);
   }
@@ -1844,10 +1911,11 @@ function spawnMinion(type, from, n) {
 }
 
 // How far it travels per second while charging, and how many charges it links
-// into one attack before it goes down. A second lap adds a third dash — the
-// same fight, with less of the room left safe.
+// into one attack before it goes down. The roster slot sets the base — two for
+// the Megaoutage, three for the Cascade — and a second lap adds one more on
+// top: the same fight, with less of the room left safe.
 const DASH_SPEED = 430;
-const outageDashes = (e) => ((e.lap || 0) >= 1 ? 3 : 2);
+const outageDashes = (e) => ((e.def && e.def.dashes) || 2) + ((e.lap || 0) >= 1 ? 1 : 0);
 
 function shedDebt(e, n) {
   spawnMinion('bug', e, n);
@@ -1869,11 +1937,15 @@ function shedDebt(e, n) {
 // the vulnerable window never opens; killing the last attachment also resets
 // the clock to a full interval, so the window is guaranteed by construction
 // rather than by luck.
+// It also does not arrive empty-handed: the ticket was already this big when it
+// reached you, so it walks in with curDiff().scope0 attachments already glued
+// on and the fight opens on a strip rather than on a free shot.
 const SCOPE_GAP = 15;      // centre-to-centre ride distance out from the boss edge
 const SCOPE_MAX = 5;       // most that can be attached at once
 const SCOPE_GROW = 2.6;    // seconds between attachments
 const SCOPE_FIRST = 1.1;   // the first is quick, so the rule teaches itself early
 const SCOPE_SHOOT = 2.2;   // it throws requirements at you while you strip it
+const SCOPE_SPREAD = [-0.22, 0, 0.22]; // the requirements doc, in triplicate
 
 // A free-ish angle on the boss's rim: sample a few and take the one furthest
 // from what is already attached, so the scope spreads around it instead of
@@ -1892,7 +1964,10 @@ function scopeAngle(e) {
   return best;
 }
 
-function growScope(e) {
+// `quiet` is the scope it arrived with: the same attachment, without the
+// floater and the ding, because five of each on top of the title card is noise
+// rather than information.
+function growScope(e, quiet) {
   const a = scopeAngle(e);
   const m = makeEnemy('story',
     clamp(e.x + Math.cos(a) * (e.r + SCOPE_GAP), 10, VW - 10),
@@ -1903,6 +1978,7 @@ function growScope(e) {
   m.flank = 0;
   e.scope.push(m);
   e.grown++;
+  if (quiet) return;
   addFloater(e.x, e.y - e.r - 6, CREEP[(e.grown - 1) % CREEP.length], '#ff8fa0');
   sfx.ding();
 }
@@ -1928,45 +2004,94 @@ const DERAIL_R = 60;
 // so a switch never invalidates a window you already committed to.
 const MTG_HUE = 4.5;
 
-// The only real way into the agenda: something interrupts it. Called both by
-// the boss losing its own thread and by a kill inside DERAIL_R.
+// ACTION ITEMS. The room used to lose its own thread every 6s no matter what
+// you did, which meant the whole fight could be waited out: stand off, let the
+// window arrive, take your free shots. Now nothing is free. The meeting assigns
+// you an action item — a tagged attendee on a visible clock, tethered to the
+// room — and closing it in time is what makes the chair look up. Miss the
+// clock and the meeting takes the time back: it heals, and books another one.
+//
+// It cannot deadlock: there is always exactly one action item live or one
+// about to be assigned, so there is always a way in.
+const ACTION_EVERY = 5;    // seconds between assignments
+const ACTION_TIME = 4;     // seconds on the clock once one lands
+const ACTION_OPEN = 2;     // how long the agenda stays open when you close one
+const ACTION_HEAL = 0.06;  // fraction of max HP it takes back when one expires
+const ACTION_MISS = ['LET\'S TAKE THIS OFFLINE', 'PARKED FOR NOW',
+  'LET\'S CIRCLE BACK', 'ADDING IT TO THE AGENDA', 'WE\'LL SYNC ON THIS'];
+
+// The room's own language is never the attendees' — see the callT block — so
+// the item you have to close in four seconds always costs you a switch, then
+// the window you earned costs you another one back.
+function assignAction(e) {
+  const m = spawnMinion('story', e, 1)[0];
+  m.area = pick(AREA_KEYS.filter((a) => a !== e.area));
+  m.actionOf = e;
+  m.actionT = cad(e, ACTION_TIME);
+  e.item = m;
+  addFloater(e.x, e.y - e.r - 8, 'ACTION ITEM ASSIGNED', '#ffd23f');
+  sfx.ding();
+}
+
+// The only way into the agenda: something interrupts it. Called by an action
+// item closed in time, and by any kill inside DERAIL_R.
 function openMeeting(e, secs, why) {
   e.open = true;
   e.cycleT = Math.max(e.cycleT, secs);
-  e.selfT = cad(e, 6);
   addFloater(e.x, e.y - e.r - 8, why, '#3fe08a');
   sfx.crit();
 }
 
-// A Merge Conflict twin killed alone comes back at half strength.
-function reviveTwin(e) {
-  const src = e.revive;
-  e.reviveT = 0; e.revive = null;
-  if (!src) return;
-  // It walks back in from the wall it was closest to rather than popping up in
-  // your lap — the reopen has to be survivable, and now it's visible too.
-  const dl = e.x, dr = VW - e.x, du = e.y, dd = VH - e.y;
-  const near = Math.min(dl, dr, du, dd);
-  let rx = clamp(e.x, 24, VW - 24), ry = clamp(e.y, 24, VH - 24);
-  if (near === dl) rx = 24; else if (near === dr) rx = VW - 24;
-  else if (near === du) ry = 24; else ry = VH - 24;
-  const t = makeEnemy('conflict', rx, ry);
-  t.maxHp = src.maxHp;
-  t.hp = src.hp;
-  t.score = src.score;
-  t.area = src.area;
-  t.lap = e.lap;    // the reopened side belongs to the same lap as the fight
-  t.spawnT = 0.5;
-  bossInit(t);
-  t.reopens = src.reopens; // so the next reopen is weaker again
-  t.branch = src.branch;   // main comes back as main
-  t.twin = e; e.twin = t;
-  bossParts.push(t);
-  // The reconnect beat you: both trunks diverge again and start cutting
-  // feature branches from scratch, so the work has to be redone before either
-  // can be merged. This is the cost of killing one side and stalling.
+// Every trunk still standing. bossParts only ever holds live parts, so this IS
+// the live set — and writing the pincer, the rebase and the reconnect against
+// its size rather than against a single `twin` is what let a third branch drop
+// into the same fight without a second copy of any of it.
+const trunks = () => bossParts.filter((b) => b.boss === 'conflict');
+
+// How long the last side standing gives you before everything you closed comes
+// back. It used to be 3.2s, which — against a survivor already taking ×2 — was
+// long enough that killing one side was simply how you won.
+const REOPEN_WINDOW = 2;
+
+// The reconnect countdown beat you: every branch you closed reopens at once,
+// each half as strong as it was last time, and they all diverge again so the
+// feature work has to be redone before anything can be merged. This is the
+// cost of dropping sides and then stalling.
+function reopenTrunks(e) {
+  e.reviveT = 0;
+  const back = conflictFallen.splice(0);
+  if (!back.length) return;
+  // They walk back in off the walls rather than popping up in your lap — the
+  // reopen has to be survivable, and visible — and off DIFFERENT walls, or
+  // three branches would rematerialize as one stack.
+  const edges = [
+    () => ({ x: 24, y: clamp(e.y, 24, VH - 24) }),
+    () => ({ x: VW - 24, y: clamp(e.y, 24, VH - 24) }),
+    () => ({ x: clamp(e.x, 24, VW - 24), y: 24 }),
+    () => ({ x: clamp(e.x, 24, VW - 24), y: VH - 24 }),
+  ];
+  const dist = [e.x, VW - e.x, e.y, VH - e.y];
+  let near = 0;
+  for (let i = 1; i < 4; i++) if (dist[i] < dist[near]) near = i;
+
+  back.forEach((src, i) => {
+    const at = edges[(near + i) % 4]();
+    const t = makeEnemy('conflict', at.x, at.y);
+    t.maxHp = src.maxHp;
+    t.hp = src.hp;
+    t.score = src.score;
+    t.area = src.area;
+    t.lap = e.lap;    // the reopened side belongs to the same lap as the fight
+    t.def = e.def;    // and to the same roster slot, so it keeps the trunk count
+    t.spawnT = 0.5;
+    bossInit(t);
+    t.reopens = src.reopens; // so the next reopen is weaker again
+    t.branch = src.branch;   // main comes back as main
+    bossParts.push(t);
+  });
   divergeAgain();
-  addFloater(t.x, t.y - 16, 'REOPENED — BOTH BRANCHES DIVERGED', '#ff5a6e', true);
+  addFloater(e.x, e.y - 16,
+    'REOPENED — ' + (back.length + 1) + ' BRANCHES DIVERGED', '#ff5a6e', true);
   sfx.siren();
   shake += 5;
 }
@@ -1980,13 +2105,45 @@ function reviveTwin(e) {
 // whole gap, and the immune window becomes something you dodge.
 const FLAKY_KEEP = 70;
 
-// The retry hop: how far it re-runs the suite, and how often. It was every 3rd
-// failure and 80px — a nudge you barely registered, usually still inside your
-// existing firing line. At every 2nd failure and 170px it genuinely relocates
-// the fight, which is the point of a test that passes locally.
-// FLAKY_KEEP above still governs the kiting, so this cannot make it
-// unreachable: the hop moves it, the FAIL window still walks it back to you.
-const FLAKY_HOP = 170, FLAKY_HOP_EVERY = 2;
+// Beyond this it is not kiting any more, it is coming back from wherever the
+// last retry threw it, and both of its speeds change to say so. This is what
+// pays for a half-room hop, and it is not optional: a hop of H from a boss H/2
+// away CANNOT land closer than H/2 — the geometry allows nothing else — so
+// without a hard return the retry is simply a rest, the fight never arrives,
+// and a parked player is never touched. That is the exact trap FLAKY_KEEP was
+// written to escape, and the threat proof catches it every time.
+//
+// The sprint is deliberately on the IMMUNE half of the cycle, where it costs
+// you nothing you could have shot: FAIL was always the half you dodge, so a
+// long hop just means more of it. At 2.4× it closes ~106u/s, still well under
+// the chair's 160, so it is outrun rather than escaped.
+//
+// The leash has to sit just above FLAKY_KEEP, not comfortably above it. The
+// whole rhythm is that a PASS window ends at the 70px standoff and the FAIL
+// window that follows closes ~60px of it, which is contact. Leave a wide crawl
+// band under the leash and a hop never gets back to that standoff — it ends
+// each PASS at ~79 instead of 70, every FAIL bottoms out at 18px, and the fight
+// misses the player by two pixels forever. That is what a 25s stall looks like,
+// and it is worth more than the extra kiting room.
+const FLAKY_LEASH = 90;
+const FLAKY_RETURN = 0.9;  // ×speed walking back while hittable
+const FLAKY_SPRINT = 2.4;  // ×speed sprinting back while immune
+
+// The retry hop: how far it asks to re-run the suite, and how often. It was
+// every 3rd failure and 80px — a nudge you barely registered, usually still
+// inside your existing firing line — then every 2nd and a realised ~135px.
+//
+// FLAKY_HOP is the ask; FLAKY_REACH is what the room will actually give. The
+// hop is an arc AROUND you rather than a flight away from you, so the landing
+// radius is capped — and a 640×360 room caps it hard, because a radius past
+// ~190 from mid-court is already outside the floor and gets clamped back in.
+// Between that and the return trip the fight can afford, the realised hop lands
+// at ~225px: 62% of the room's height, and two thirds further than before.
+// Pushing FLAKY_REACH to 250 buys ~15px more and costs the threat proof — the
+// boss cannot get back inside one PASS/FAIL cycle from there, and a parked
+// player goes untouched for 17-23s. It is an arena-size ceiling, not a tuning
+// one. Re-measure both if VW/VH ever change.
+const FLAKY_HOP = VW / 2, FLAKY_HOP_EVERY = 2, FLAKY_REACH = 190;
 
 // Returns true when the boss moved itself this frame (skipping the generic seek).
 function bossBehave(e, dt, ux, uy) {
@@ -2015,14 +2172,7 @@ function bossBehave(e, dt, ux, uy) {
       e.traceWind -= dt;
       if (e.traceWind <= 0) {
         e.traceT = cad(e, TRACE_PERIOD);
-        const off = rnd(0, TAU);
-        for (let k = 0; k < TRACE_N; k++) {
-          const a = off + TAU * k / TRACE_N;
-          throwHazard(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
-            Math.cos(a) * TRACE_SPEED, Math.sin(a) * TRACE_SPEED, TRACE_LIFE);
-        }
-        shake += 3;
-        sfx.trace();
+        throwRing(e, TRACE_N, TRACE_SPEED, TRACE_LIFE);
       }
     }
     // it is glacial at full HP and genuinely fast once it is coming apart
@@ -2053,7 +2203,7 @@ function bossBehave(e, dt, ux, uy) {
     if (e.shootT <= 0) {
       e.shootT = cad(e, SCOPE_SHOOT);
       const a = Math.atan2(player.y - e.y, player.x - e.x);
-      for (const spread of [-0.14, 0.14]) {
+      for (const spread of SCOPE_SPREAD) {
         throwHazard(e.x + Math.cos(a + spread) * e.r, e.y + Math.sin(a + spread) * e.r,
           Math.cos(a + spread) * 90, Math.sin(a + spread) * 90, 2);
       }
@@ -2063,7 +2213,7 @@ function bossBehave(e, dt, ux, uy) {
   if (e.boss === 'conflict') {
     if (e.reviveT > 0) {
       e.reviveT -= dt;
-      if (e.reviveT <= 0) reviveTwin(e);
+      if (e.reviveT <= 0) reopenTrunks(e);
     }
     // --- feature branches: cut them, and go clean once they're all closed
     e.feat = e.feat.filter((f) => enemies.includes(f));
@@ -2078,7 +2228,7 @@ function bossBehave(e, dt, ux, uy) {
       } else {
         e.featT -= dt;
         if (e.featT <= 0 && e.feat.length < FEAT_MAX) {
-          e.featT = cad(e, FEAT_EVERY);
+          e.featT = cad(e, featEvery(e));
           cutFeature(e);
         }
       }
@@ -2091,13 +2241,16 @@ function bossBehave(e, dt, ux, uy) {
       throwHazard(e.x + Math.cos(a) * e.r, e.y + Math.sin(a) * e.r,
         Math.cos(a) * 105, Math.sin(a) * 105, 2.6);
     }
-    const tw = e.twin && enemies.includes(e.twin) ? e.twin : null;
-    if (!tw) return false; // last side standing: the ordinary seek is threat enough
-    // Pincer: each side steers for the point opposite its twin across you, so
-    // they arrive from both sides instead of queueing up in one blob. Backing
-    // straight off no longer keeps them both in front of you.
-    const tx = clamp(player.x + (player.x - tw.x) * 0.5, e.r, VW - e.r);
-    const ty = clamp(player.y + (player.y - tw.y) * 0.5, e.r, VH - e.r);
+    const rest = trunks().filter((o) => o !== e);
+    if (!rest.length) return false; // last side standing: the ordinary seek is threat enough
+    // Pincer: each side steers for the point opposite where the others are,
+    // averaged, so they arrive from around you instead of queueing up in one
+    // blob. Backing straight off no longer keeps them all in front of you, and
+    // with three trunks the average is what spreads them across the room.
+    const ox = rest.reduce((s, o) => s + o.x, 0) / rest.length;
+    const oy = rest.reduce((s, o) => s + o.y, 0) / rest.length;
+    const tx = clamp(player.x + (player.x - ox) * 0.5, e.r, VW - e.r);
+    const ty = clamp(player.y + (player.y - oy) * 0.5, e.r, VH - e.r);
     const gx = tx - e.x, gy = ty - e.y;
     const gd = Math.hypot(gx, gy);
     if (gd > 0.5) {
@@ -2109,9 +2262,10 @@ function bossBehave(e, dt, ux, uy) {
   if (e.boss === 'mtgboss') {
     // Letters bounce off the agenda; they land only while someone derails it.
     // The old fixed open/closed cycle ignored the player entirely — you waited
-    // your turn. Now the window is something you cause: resolve an attendee
-    // next to the boss and the room looks up (see killEnemy). Left alone it
-    // still loses the thread every 6s, so it can never hard-lock the fight.
+    // your turn — and the 6s self-derail that replaced it was still a window
+    // that arrived whether or not you did anything. Now every window is one you
+    // earned: close the action item on its clock, or resolve an attendee right
+    // next to the room (see killEnemy). Nothing opens on its own any more.
     if (e.open) {
       e.cycleT -= dt;
       if (e.cycleT <= 0) {
@@ -2120,8 +2274,6 @@ function bossBehave(e, dt, ux, uy) {
         sfx.block();
       }
     } else {
-      e.selfT -= dt;
-      if (e.selfT <= 0) openMeeting(e, cad(e, 1.4), 'THE CHAIR LOST THE THREAD');
       // mandatory attendance: stand too close while it's talking and it pulls
       // you into the room. The ring it drags from is drawn on the floor.
       const d = Math.hypot(player.x - e.x, player.y - e.y);
@@ -2130,6 +2282,24 @@ function bossBehave(e, dt, ux, uy) {
         player.x = clamp(player.x + (e.x - player.x) * pull, player.r, VW - player.r);
         player.y = clamp(player.y + (e.y - player.y) * pull, player.r, VH - player.r);
       }
+    }
+    // The action item and its clock. Closing it is handled in killEnemy — this
+    // side only has to notice the miss, and book the next one.
+    if (e.item && !enemies.includes(e.item)) e.item = null;
+    if (e.item) {
+      e.item.actionT -= dt;
+      if (e.item.actionT <= 0) {
+        e.item.actionOf = null;   // it stays on the field, just no longer on a clock
+        e.item = null;
+        e.actT = cad(e, ACTION_EVERY);
+        e.hp = Math.min(e.maxHp, e.hp + e.maxHp * ACTION_HEAL);
+        addFloater(e.x, e.y - e.r - 8, pick(ACTION_MISS), '#ff5a6e', true);
+        sfx.siren();
+        shake += 3;
+      }
+    } else {
+      e.actT -= dt;
+      if (e.actT <= 0) { e.actT = cad(e, ACTION_EVERY); assignAction(e); }
     }
     // The room keeps changing what it's about. Its own area rotates, and the
     // attendees it calls in are deliberately the OTHER two areas — so the
@@ -2175,13 +2345,24 @@ function bossBehave(e, dt, ux, uy) {
       if (e.trailT <= 0) { e.trailT = 24 / DASH_SPEED; throwHazard(e.x, e.y, 0, 0, 2.5, 'fire'); }
       if (e.phaseT <= 0) {
         e.dashesLeft--;
+        // The Cascade slams the room where every single charge ends; the
+        // ordinary Megaoutage saves one slam for half a second after the whole
+        // combo lands, so the incident window opens under a ring you have to
+        // already be clear of. Either way it's the Monolith's stack trace,
+        // fired by something that has just stopped moving.
+        if (e.def && e.def.ringEach) throwRing(e, OUT_RING_N, OUT_RING_SPEED, OUT_RING_LIFE);
         if (e.dashesLeft > 0) { e.mode = 'aim'; e.phaseT = cad(e, 0.25); } // barely time to move
         else {
           e.mode = 'down'; e.phaseT = cad(e, 1.1); shake += 3;
+          e.ringT = (e.def && e.def.ringAfter) || 0;
           if (!e.windowHint) { e.windowHint = true; addFloater(e.x, e.y - e.r - 8, 'INCIDENT WINDOW — ×2', '#ffd23f'); }
         }
       }
       return true;
+    }
+    if (e.ringT > 0) { // the delayed slam, telegraphed by the ring drawn around it
+      e.ringT -= dt;
+      if (e.ringT <= 0) throwRing(e, OUT_RING_N, OUT_RING_SPEED, OUT_RING_LIFE);
     }
     if (e.phaseT <= 0) { e.mode = 'aim'; e.phaseT = cad(e, 0.7); e.dashesLeft = outageDashes(e); }
     return true;
@@ -2191,6 +2372,7 @@ function bossBehave(e, dt, ux, uy) {
     if (e.phaseT <= 0) {
       e.pass = !e.pass;
       e.phaseT = e.pass ? cad(e, 1.7) : cad(e, 1.2);
+      if (!e.pass) e.failedAt = t; // the instant the window shut — see the feeding rule
       addFloater(e.x, e.y - e.r - 8, e.pass ? 'PASS' : 'FAIL — IMMUNE', e.pass ? '#3fe08a' : '#ff5a6e');
       sfx.ding();
       // every other failure it just runs the suite again, somewhere else
@@ -2202,30 +2384,47 @@ function bossBehave(e, dt, ux, uy) {
     if (e.blinkT > 0) {
       e.blinkT -= dt;
       if (e.blinkT <= 0) {
-        // The hop swings AROUND you, not away from you: it keeps roughly the
-        // distance it already had and re-appears that far along the arc, so it
-        // lands on a completely different side of the room without ever
-        // out-ranging the fight. A hop in a free direction fails the threat
-        // proof outright — at this size and rate it retreats faster than a FAIL
-        // window can close, and a player who stands still is never reached,
-        // which is the same trap FLAKY_KEEP was written to escape.
-        const keep = clamp(Math.hypot(e.x - player.x, e.y - player.y), FLAKY_KEEP, 190);
+        // The hop swings AROUND you, not away from you: it re-appears that far
+        // along the arc, so it lands on a completely different side of the room
+        // without ever running off with the fight. A hop in a free direction
+        // fails the threat proof outright — at this size and rate it retreats
+        // faster than a FAIL window can close, and a player who stands still is
+        // never reached, which is the same trap FLAKY_KEEP was written to
+        // escape. FLAKY_LEASH is what makes the wider arc affordable.
+        // The radius it lands on has to account for where it is standing NOW,
+        // not just for the arc: it starts d0 from you and finishes `keep` from
+        // you on the far side, so the jump is d0 + keep long. Clamping the
+        // START distance instead — which is the obvious way to write this —
+        // silently delivers a 230px hop for a 320px setting.
+        const d0 = Math.hypot(e.x - player.x, e.y - player.y);
+        const keep = clamp(FLAKY_HOP - d0, FLAKY_KEEP, FLAKY_REACH);
         const swing = 2 * Math.asin(Math.min(1, FLAKY_HOP / (2 * keep))) * (Math.random() < 0.5 ? 1 : -1);
         const a = Math.atan2(e.y - player.y, e.x - player.x) + swing;
         e.x = clamp(player.x + Math.cos(a) * keep, e.r, VW - e.r);
         e.y = clamp(player.y + Math.sin(a) * keep, e.r, VH - e.r);
         e.spawnT = 0.3; // lands inert and pulsing, like anything materializing
         addParticles(e.x, e.y, '#c9a8ff', 10, 90);
+        // A re-run is a different environment: the stack it fails on moves with
+        // it, so the language that hurts it is never the one you just settled
+        // into. Same gesture as the Monolith's refactor, on the hop instead of
+        // on a clock — the tell is the hop you already had to watch for.
+        e.area = pick(AREA_KEYS.filter((ar) => ar !== e.area));
+        addFloater(e.x, e.y - e.r - 8,
+          'RE-RAN ON ' + LANGS.find((l) => l.area === e.area).name, AREAS[e.area].color);
       }
       return true; // it holds still through the flicker — that's the telegraph
     }
     // Inverted pursuit: it flees while it's hittable and hunts you while it
     // isn't, so the damage window is a chase and the immune window is a dodge.
     // Spraying through FAIL was free before; now it costs ground as well as HP.
-    // The flee stops at FLAKY_KEEP and turns into a slow walk back in, so each
-    // immune window can actually close the gap instead of it hovering forever.
-    const far = Math.hypot(player.x - e.x, player.y - e.y) > FLAKY_KEEP;
-    const sp = e.sp * (e.pass ? (far ? 0.25 : -0.8) : 1.3);
+    // Inside FLAKY_LEASH it is in the fight and behaves as it always has:
+    // backing off while hittable, hunting while immune. Outside it, it is still
+    // out at the last retry's distance and both speeds switch to getting back.
+    const d = Math.hypot(player.x - e.x, player.y - e.y);
+    const out = d > FLAKY_LEASH;
+    const sp = e.sp * (e.pass
+      ? (out ? FLAKY_RETURN : d > FLAKY_KEEP ? 0.25 : -0.8)
+      : (out ? FLAKY_SPRINT : 1.3));
     const wob = Math.sin(t * e.wobFreq + e.wobPhase) * e.wobAmp;
     e.x += (ux + -uy * wob) * sp * dt;
     e.y += (uy + ux * wob) * sp * dt;
@@ -2235,19 +2434,33 @@ function bossBehave(e, dt, ux, uy) {
 }
 
 // MERGE CONFLICT is two long-lived branches, `main` and `master`, that have
-// diverged. Each keeps cutting feature branches off itself — small tickets
+// diverged — and THE OCTOPUS MERGE is the same fight with `mainster` in the
+// middle of it. Each keeps cutting feature branches off itself — small tickets
 // tethered to their parent by a dashed line — and while ANY feature branch is
-// still open anywhere, neither trunk can be merged: letters bounce off both.
+// still open anywhere, no trunk can be merged: letters bounce off all of them.
 //
 // A side that has cut its quota and had them all closed goes CLEAN and stops
 // cutting new ones, which is what makes the work finite: clear one side, then
-// the other, and only then are the trunks themselves killable. Killing one
-// starts the reconnect countdown that was always here — but now, if it runs
-// out, both sides diverge again and start cutting features from scratch.
+// the next, and only then are the trunks themselves killable. Dropping trunks
+// buys nothing until only ONE is left standing — that is when the reconnect
+// countdown starts, and if it runs out every branch you closed comes back and
+// they all diverge again, cutting features from scratch.
 const FEAT_QUOTA = 3;      // a side must cut this many before it can be called clean
 const FEAT_MAX = 3;        // open at once from one side
-const FEAT_EVERY = 3.4;    // seconds between cuts
+const FEAT_EVERY = 3.4;    // seconds between cuts, for a two-trunk fight
 const CONFLICT_SHOOT = 3.6; // seconds between the letters a trunk throws at you
+
+// Immunity here is GLOBAL — no trunk is merge-able while any branch is open
+// anywhere — so the room's total cut rate, not the per-trunk one, is what the
+// fight is balanced against. A third side cutting on the same 3.4s clock is
+// half again the work, and against an all-or-nothing rule that is not "harder",
+// it is unwinnable: measured, THE OCTOPUS MERGE sat at 3×full HP for 150s
+// while a god-mode player did nothing but farm branches, because the window
+// where every branch was closed at once never arrived. Stretching the per-trunk
+// interval by the trunk count keeps the aggregate exactly where Merge Conflict
+// tuned it, and the extra work shows up where it should — 9 branches to close
+// instead of 6, and half again the HP behind them.
+const featEvery = (e) => FEAT_EVERY * ((e.def && e.def.trunks ? e.def.trunks.length : 2) / 2);
 const FEAT_NAMES = ['feat/login', 'fix/npe', 'feat/dark-mode', 'fix/flaky-ci',
   'feat/export', 'fix/off-by-one', 'feat/webhooks', 'fix/timezone'];
 
@@ -2281,13 +2494,28 @@ function divergeAgain() {
   }
 }
 
-// Twins sitting on top of each other are rebasing onto one another and take
+// Trunks sitting on top of each other are rebasing onto one another and take
 // half damage until you split them up. Together with the pincer steering it
 // makes Merge Conflict a positioning fight: they want to converge on you, and
 // letting them is what makes them tanky.
 const REBASE_DIST = 90;
-const rebasing = (e) => e.boss === 'conflict' && e.twin && enemies.includes(e.twin) &&
-  Math.hypot(e.x - e.twin.x, e.y - e.twin.y) < REBASE_DIST;
+const rebasing = (e) => e.boss === 'conflict' &&
+  trunks().some((o) => o !== e && Math.hypot(e.x - o.x, e.y - o.y) < REBASE_DIST);
+
+// What one letter is worth against a target, before the situational multipliers
+// the fights layer on top (the incident window, the reconnect window, rebasing).
+// A match is always ×2. What the wrong tech is worth is the difficulty's call —
+// it decides whether the stripe is a bonus or an instruction — and heavies halve
+// it again, so switching language is the real answer against anything big.
+//
+// It is a function rather than four lines inline because The Flaky Test needs
+// the same number with the sign flipped: what it heals when you feed it a
+// letter through FAIL has to track what that letter would have taken off.
+function letterDamage(e, lang) {
+  if (e.area && LANGS[lang].area === e.area) return 2;
+  if (e.area && (e.boss || e.type === 'epic')) return curDiff().off * 0.5;
+  return curDiff().off;
+}
 
 // Letters a boss currently ignores. Both cases are telegraphed on screen.
 function bossBlocks(e) {
@@ -2308,19 +2536,27 @@ function killBoss(e, gained) {
     // everything it accreted comes back as tickets
     spawnMinion('story', e, clamp(2 + e.grown, 2, 7));
   }
-  if (e.boss === 'conflict' && e.twin && enemies.includes(e.twin)) {
-    // Killed alone: it reopens unless the other side goes down too, fast. The
-    // window is winnable by construction — the surviving side takes double
-    // damage while it is open, and each reopen comes back half as strong as
-    // the last, so the fight always converges even on a bad burst.
-    const twin = e.twin;
+  if (e.boss === 'conflict' && trunks().length) {
+    // Closed, not resolved: it waits in conflictFallen for the countdown to
+    // beat you, and comes back half as strong as it was last time — so the
+    // fight converges even on a bad burst. But the countdown itself only
+    // starts once ONE side is left standing: with three branches open,
+    // dropping the first two just shortens the list you have to hold down.
     const reopens = (e.reopens || 0) + 1;
-    twin.reviveT = 3.2;
-    twin.revive = { maxHp: e.maxHp, hp: Math.max(1, Math.round(e.maxHp * Math.pow(0.5, reopens))), score: e.score, area: e.area, reopens, branch: e.branch };
-    twin.twin = null;
-    addFloater(twin.x, twin.y - twin.r - 12, 'RESOLVE THE OTHER SIDE — ×2 DAMAGE!', '#ffd23f', true);
-    sfx.siren();
-    shake += 4;
+    conflictFallen.push({
+      maxHp: e.maxHp, hp: Math.max(1, Math.round(e.maxHp * Math.pow(0.5, reopens))),
+      score: e.score, area: e.area, reopens, branch: e.branch,
+    });
+    const rest = trunks();
+    if (rest.length === 1) {
+      rest[0].reviveT = REOPEN_WINDOW;
+      addFloater(rest[0].x, rest[0].y - rest[0].r - 12, 'RESOLVE THE LAST SIDE — ×2 DAMAGE!', '#ffd23f', true);
+      sfx.siren();
+      shake += 4;
+    } else {
+      addFloater(e.x, e.y, rest.length + ' BRANCHES STILL OPEN — +' + gained, '#ffd23f');
+      sfx.epicDie();
+    }
     return false;
   }
 
@@ -2484,7 +2720,10 @@ function fire() {
   const a = player.angle + rnd(-0.05, 0.05);
   const nx = player.x + Math.cos(player.angle) * 15; // just past the laptop edge
   const ny = player.y + Math.sin(player.angle) * 15;
-  bullets.push({ x: nx, y: ny, vx: Math.cos(a) * 360, vy: Math.sin(a) * 360, life: 1.9, ch: pick(GLYPHS), lang });
+  // t0 is when it left the laptop. Only The Flaky Test reads it, to tell a
+  // letter you chose to fire into a FAIL window from one that was already in
+  // the air when the window flipped — see the feeding rule in bullets-vs-enemies.
+  bullets.push({ x: nx, y: ny, vx: Math.cos(a) * 360, vy: Math.sin(a) * 360, life: 1.9, ch: pick(GLYPHS), lang, t0: t });
   player.vx -= Math.cos(a) * 6.7; // chair recoil
   player.vy -= Math.sin(a) * 6.7;
   addParticles(nx, ny, LANGS[lang].color, 2, 40);
@@ -2545,7 +2784,16 @@ function killEnemy(e, silent) {
   addParticles(e.x, e.y, shredColor, e.type === 'epic' ? 16 : 4, 60);
   // An attendee resolved right next to The Endless Meeting is the interruption
   // that opens it — kills are the key, so add control becomes the boss fight.
+  // An action item closed before its clock runs out opens it from anywhere, and
+  // for longer: that is the scheduled way in, the proximity one is the greedy
+  // one you take when the room happens to be standing next to your work.
   if (!e.boss) {
+    if (e.actionOf && bossParts.includes(e.actionOf)) {
+      const b = e.actionOf;
+      b.item = null;
+      b.actT = cad(b, ACTION_EVERY);
+      openMeeting(b, cad(b, ACTION_OPEN), 'ACTION ITEM CLOSED');
+    }
     for (const b of bossParts) {
       if (b.boss === 'mtgboss' && Math.hypot(e.x - b.x, e.y - b.y) < DERAIL_R) {
         openMeeting(b, cad(b, 2.2), 'SOMEONE ASKED A QUESTION');
@@ -2629,11 +2877,12 @@ function update(dt) {
   // chair spin: D = clockwise, A = counter-clockwise; both held = facing
   // locked. With auto-aim on, the chair tracks the nearest ticket unless
   // A/D override. CHAIR_TURN stays the committed turn rate either way.
+  p.aimShielded = false;   // set below: the assist is facing something immune
   if (keys['a'] || keys['d']) {
     const spin = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
     p.angle += spin * CHAIR_TURN * dt;
   } else if (autoAim) {
-    let best = null, bd = Infinity;
+    let best = null, bd = Infinity, shielded = null, sd = Infinity;
     for (const e of enemies) {
       if (e.type === 'meeting' || e.spawnT > 0) continue;
       // A blocked ticket eats letters exactly like a meeting does. Locking
@@ -2641,10 +2890,19 @@ function update(dt) {
       // aim past it at the blocker, which is what's actually in the way.
       if (e.blockedBy && enemies.includes(e.blockedBy)) continue;
       const dd = (e.x - p.x) * (e.x - p.x) + (e.y - p.y) * (e.y - p.y);
+      // A boss inside its immune window is the same situation, and every one of
+      // those windows exists to point you at something else: the scope, the
+      // attendees, the open branches. So it loses the lock to anything that can
+      // actually be hit — but it stays the FALLBACK, because dropping the aim
+      // entirely every FAIL spends half the next window turning back around.
+      // Facing it is free; firing at it is not, which is what aimShielded is.
+      if (bossBlocks(e)) { if (dd < sd) { sd = dd; shielded = e; } continue; }
       if (dd < bd) { bd = dd; best = e; }
     }
-    if (best) {
-      const want = Math.atan2(best.y - p.y, best.x - p.x);
+    p.aimShielded = !best && !!shielded;
+    const tgt = best || shielded;
+    if (tgt) {
+      const want = Math.atan2(tgt.y - p.y, tgt.x - p.x);
       const diff = ((want - p.angle + Math.PI) % TAU + TAU) % TAU - Math.PI;
       p.angle += clamp(diff, -CHAIR_TURN * dt, CHAIR_TURN * dt);
     }
@@ -2657,9 +2915,14 @@ function update(dt) {
   comboT = Math.max(0, comboT - dt);
   if (comboT === 0) combo = 1;
 
-  // --- firing: Space, click, or the auto-shoot assist
+  // --- firing: Space, click, or the auto-shoot assist. The assist holds fire
+  // when the only thing the chair can see is inside an immune window: that
+  // letter is wasted, and into The Flaky Test it is worse than wasted — it
+  // heals, at twice what the letter was worth, so an assisted player would
+  // out-heal their own damage and the fight would never end. Holding Space
+  // still lets you make that mistake yourself; that part is the boss.
   p.fireCd -= dt;
-  if ((mouse.down || keys[' '] || autoShoot) && p.fireCd <= 0) {
+  if ((mouse.down || keys[' '] || (autoShoot && !p.aimShielded)) && p.fireCd <= 0) {
     fire();
     p.fireCd = 1 / (p.rapidT > 0 ? 16 : 8);
   }
@@ -2964,11 +3227,24 @@ function update(dt) {
           // meeting invites block your letters — infinite HP, zero shame.
           // A boss in its immune window, or a BLOCKED BY ticket whose blocker
           // still lives, shrugs them off the same way.
-          // A failing test doesn't shrug it off, though — it eats it. Holding
-          // the trigger through FAIL is now how you lose the fight.
-          if (e.boss === 'flaky') {
-            e.hp = Math.min(e.maxHp, e.hp + 0.5);
-            if (!e.fedHint) { e.fedHint = true; addFloater(e.x, e.y - e.r - 8, 'IT FED ON THAT', '#c9a8ff'); }
+          // A failing test doesn't shrug it off, though — it eats it, and it
+          // eats DOUBLE what the same letter would have been worth as damage.
+          // A flat +0.5 was a rounding error you could spray straight through;
+          // at ×2 a second of blind fire through FAIL undoes four seconds of
+          // aimed fire through PASS, which is the fight the boss is named for.
+          // It scales off the letter, so the wrong language feeds it less —
+          // the stripe still means what it means, in both directions.
+          // It only eats what you CHOSE to feed it: a letter fired after the
+          // window had already flipped to FAIL. A letter that was mid-flight
+          // when it flipped is merely wasted. Without that line the boss eats
+          // your flight time rather than your judgement — measured on
+          // CLAUDELIKE, where the PASS window is 1.22s and a letter takes
+          // ~0.2s to cross the gap, it clawed back 258 of 326 damage and the
+          // fight ran past the 75s enrage. Punishing the trigger is the
+          // mechanic; punishing the speed of sound is not.
+          if (e.boss === 'flaky' && b.t0 >= e.failedAt) {
+            e.hp = Math.min(e.maxHp, e.hp + 2 * letterDamage(e, b.lang));
+            if (!e.fedHint) { e.fedHint = true; addFloater(e.x, e.y - e.r - 8, 'IT FED ON THAT — ×2', '#c9a8ff'); }
           }
           if (blocker) callOutBlocker(e, blocker);
           addParticles(b.x, b.y, '#5a6a90', 3, 40);
@@ -2976,16 +3252,13 @@ function update(dt) {
           continue outer;
         }
         const matched = e.area && LANGS[b.lang].area === e.area;
-        // A match is always ×2. What the wrong tech is worth is the difficulty's
-        // call — it decides whether the stripe is a bonus or an instruction.
-        let dmg = matched ? 2 : curDiff().off;
+        let dmg = letterDamage(e, b.lang);
         // heavies resist off-area letters — switching language is the real answer
-        if (!matched && e.area && (e.boss || e.type === 'epic')) {
-          dmg = curDiff().off * 0.5;
-          if (!e.resistHint) { e.resistHint = true; addFloater(e.x, e.y - e.r - 8, 'WRONG TECH — ×½', '#8f8fa8'); }
+        if (!matched && e.area && (e.boss || e.type === 'epic') && !e.resistHint) {
+          e.resistHint = true; addFloater(e.x, e.y - e.r - 8, 'WRONG TECH — ×½', '#8f8fa8');
         }
         if (e.boss === 'outage' && e.mode === 'down') dmg *= 2; // the incident window
-        if (e.boss === 'conflict' && e.reviveT > 0) dmg *= 2;   // one side already resolved
+        if (e.boss === 'conflict' && e.reviveT > 0) dmg *= 2;   // last side standing
         if (rebasing(e)) {                                      // the two sides are covering each other
           dmg *= 0.5;
           if (!e.rebaseHint) { e.rebaseHint = true; addFloater(e.x, e.y - e.r - 8, 'REBASING — SPLIT THEM UP', '#ffd23f'); }
@@ -3156,6 +3429,19 @@ function draw() {
       ctx.fillText(e.branchName, Math.round(e.x) + 1, ey + h + 8);
       ctx.fillStyle = '#7fe0ff';
       ctx.fillText(e.branchName, Math.round(e.x), ey + h + 7);
+    }
+    // an action item wears its clock — the deadline is the mechanic, so it has
+    // to be readable from wherever you happen to be standing
+    if (e.actionOf && bossParts.includes(e.actionOf)) {
+      const late = e.actionT < 1.5;
+      ctx.strokeStyle = late && Math.floor(t * 10) % 2 === 0 ? '#ff5a6e' : '#ffd23f';
+      ctx.strokeRect(ex - 2.5, ey - 2.5, w + 5, h + 5);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 7px monospace';
+      ctx.fillStyle = '#080c18';
+      ctx.fillText(e.actionT.toFixed(1) + 's', Math.round(e.x) + 1, ey - 4);
+      ctx.fillStyle = late ? '#ff5a6e' : '#ffd23f';
+      ctx.fillText(e.actionT.toFixed(1) + 's', Math.round(e.x), ey - 5);
     }
     // BLOCKED BY: link line to the blocker + shield border while it lives
     if (e.blockedBy && enemies.includes(e.blockedBy)) {
@@ -3342,6 +3628,16 @@ function drawBossTells(e, ex, ey, w, h) {
       ctx.beginPath(); ctx.arc(e.x, e.y, ATTENDANCE_R, 0, TAU); ctx.stroke();
       ctx.globalAlpha = 1;
     }
+    // the action item, on a dashed tether like a feature branch — the ticket
+    // the room is waiting on, and the only scheduled way into the agenda
+    if (e.item && enemies.includes(e.item)) {
+      ctx.save();
+      ctx.setLineDash([2, 3]);
+      ctx.strokeStyle = e.item.actionT < 1.5 && Math.floor(t * 10) % 2 === 0
+        ? '#ff5a6e' : 'rgba(255,210,63,0.7)';
+      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.item.x, e.item.y); ctx.stroke();
+      ctx.restore();
+    }
     // the organizer pip — green means someone derailed the agenda, hit it now
     ctx.fillStyle = e.open ? '#3fe08a' : '#5a6a90';
     ctx.fillRect(cx - 3, Math.round(e.y) - 3, 6, 6);
@@ -3402,13 +3698,24 @@ function drawBossTells(e, ex, ey, w, h) {
   if (e.boss === 'outage' && e.mode === 'down') {
     ctx.strokeStyle = Math.floor(t * 10) % 2 === 0 ? '#ffd23f' : '#3fe08a';
     ctx.strokeRect(ex - 3.5, ey - 3.5, w + 7, h + 7);
+    if (e.ringT > 0) {
+      // the shockwave it is about to let go, collapsing inward as it arrives —
+      // the same wind-up ring the Monolith draws ahead of a stack trace
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#ff5a6e';
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 4 + e.ringT * 60, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
   }
   if (e.boss === 'conflict') {
-    if (e.twin && enemies.includes(e.twin)) {
-      // the link lights up while they're close enough to cover each other —
-      // that's the half-damage state, drawn before the HP bar stalls
-      ctx.strokeStyle = rebasing(e) ? 'rgba(255,210,63,0.75)' : 'rgba(63,224,138,0.35)';
-      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.twin.x, e.twin.y); ctx.stroke();
+    // one link per pair of trunks; each lights up while those two are close
+    // enough to cover each other — the half-damage state, drawn before the HP
+    // bar stalls. With three branches the lit triangle is the whole tell.
+    for (const o of trunks()) {
+      if (o === e) continue;
+      ctx.strokeStyle = Math.hypot(e.x - o.x, e.y - o.y) < REBASE_DIST
+        ? 'rgba(255,210,63,0.75)' : 'rgba(63,224,138,0.35)';
+      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(o.x, o.y); ctx.stroke();
     }
     // feature branches: a dashed tether, deliberately unlike the solid trunk
     // link, so "cut from this side" reads at a glance
@@ -3910,6 +4217,7 @@ const DIFF_COLS = [
   { label: 'SWARM', val: (d) => mulTag(1 / d.dens) },
   { label: 'SPEED', val: (d) => mulTag(d.speed) },
   { label: 'BOSS',  val: (d) => mulTag(1 / d.cad) },
+  { label: 'SCOPE', val: (d) => d.scope0 + ' glued' }, // what Scope Creep walks in carrying
   { label: 'SP',    val: (d) => mulTag(d.sp) },
 ];
 
@@ -3986,7 +4294,7 @@ function drawDiff() {
   }
 
   // the unlock strip: what CLAUDELIKE costs, and how far along you are
-  const done = BOSSES.filter((b) => bossesDown.has(b.type)).length;
+  const done = BOSS_TYPES.filter((ty) => bossesDown.has(ty)).length;
   const unlocked = allBossesDown();
   const nagging = menuT - diffDenied < 1.2 && Math.floor(menuT * 6) % 2 === 0;
   ctx.textAlign = 'center';
@@ -3996,17 +4304,21 @@ function drawDiff() {
   ctx.fillText(unlocked
     ? 'CLAUDELIKE UNLOCKED — you resolved all six on HARD'
     : onLoan
-      ? 'CLAUDELIKE OPEN FOR TESTING (DEBUG) — not earned yet: ' + done + '/6'
-      : 'CLAUDELIKE unlocks when all six bosses are resolved on HARD — ' + done + '/6', cx, 268);
+      ? 'CLAUDELIKE OPEN FOR TESTING (DEBUG) — not earned yet: ' + done + '/' + BOSS_TYPES.length
+      : 'CLAUDELIKE unlocks when all six bosses are resolved on HARD — ' + done + '/' + BOSS_TYPES.length, cx, 268);
 
-  // one chip per boss, lit in its own colour once that one has gone down
+  // One chip per distinct boss, lit in its own colour once that one has gone
+  // down. The roster's last two slots are second readings of a fight already
+  // on this strip, so they share its chip rather than adding one — resolving
+  // THE OCTOPUS MERGE is resolving a MERGE CONFLICT, and the unlock says six.
   ctx.font = '7px monospace';
   let tw = 0;
-  const cw = BOSSES.map((b) => Math.round(ctx.measureText(b.short).width) + 10);
+  const chips = BOSS_TYPES.map((ty) => BOSSES.find((b) => b.type === ty));
+  const cw = chips.map((b) => Math.round(ctx.measureText(b.short).width) + 10);
   for (const w of cw) tw += w + 3;
   let bxp = Math.round(cx - (tw - 3) / 2);
-  for (let i = 0; i < BOSSES.length; i++) {
-    const b = BOSSES[i], got = bossesDown.has(b.type);
+  for (let i = 0; i < chips.length; i++) {
+    const b = chips[i], got = bossesDown.has(b.type);
     ctx.fillStyle = got ? 'rgba(58,47,87,0.55)' : 'rgba(8,12,24,0.85)';
     ctx.fillRect(bxp, 276, cw[i], 14);
     ctx.strokeStyle = got ? b.color : '#2a3048';
