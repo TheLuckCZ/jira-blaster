@@ -1422,7 +1422,7 @@ const BOARD_TIMEOUT = 6000;
 let board = null;    // null | { status: 'sending' | 'ok' | 'error', rows, rank }
 let boardGen = 0;    // ignores a slow reply from an earlier run
 let boardAt = -1e9;  // menuT of the last good read — the pause screen reuses it
-const BOARD_PAGE = 8; // rows per page; the API returns up to 200 runs
+const BOARD_PAGE = 10; // rows per page; the API returns up to 200 runs
 let boardPage = 0;
 
 // Read-only board, for the pause screen: the same rows the death screen draws,
@@ -4767,9 +4767,9 @@ function drawGameOver() {
   const cx = VW / 2;
   ctx.textAlign = 'center';
 
-  // laid out top-down: the board below is 0–12 rows tall, so nothing here can
-  // be positioned from the centre
-  let y = 56;
+  // laid out top-down, header kept tight: the board below runs up to 11 rows
+  // (a full page plus your own pulled-in place) before its pager
+  let y = 48;
   ctx.font = 'bold 26px monospace';
   ctx.fillStyle = '#080c18';
   ctx.fillText('BURNOUT', cx + 2, y + 2);
@@ -4778,19 +4778,19 @@ function drawGameOver() {
 
   ctx.font = '8px monospace';
   ctx.fillStyle = '#8f8fa8';
-  y += 16; ctx.fillText('The backlog consumed you.', cx, y);
+  y += 14; ctx.fillText('The backlog consumed you.', cx, y);
 
   ctx.fillStyle = '#dfe6ff';
-  y += 16;
+  y += 14;
   ctx.fillText('Story points: ' + score + '   ·   Sprints survived: ' + (sprint - 1) +
     '   ·   Tickets resolved: ' + kills, cx, y);
   if (score >= high && score > 0) {
     ctx.fillStyle = '#ffd23f';
-    y += 13; ctx.fillText('★ NEW HIGH SCORE ★', cx, y);
+    y += 12; ctx.fillText('★ NEW HIGH SCORE ★', cx, y);
   }
 
   overHits.length = 0; // cleared before drawBoard so its pager can register
-  y = drawBoard(y + 24, true, overHits);
+  y = drawBoard(y + 16, true, overHits);
 
   if (overTimer > 0.8 && Math.floor(overTimer * 2) % 2 === 0) {
     ctx.textAlign = 'center';
@@ -4821,8 +4821,7 @@ function drawBoard(y, withRank, hits) {
   const cx = VW / 2;
 
   // Drawn at 1.5× the scale it used to be: bigger font, a 15px dev icon, and
-  // the columns spread proportionally around the same centre. The taller rows
-  // are why BOARD_PAGE is 8 — the death screen has a button row to respect.
+  // the columns spread proportionally around the same centre.
   ctx.textAlign = 'center';
   ctx.font = 'bold 13px monospace';
   ctx.fillStyle = '#dfe6ff';
@@ -4841,47 +4840,61 @@ function drawBoard(y, withRank, hits) {
   // columns: rank | dev icon | name | score | when
   const R = 146, I = 150, N = 173, S = 356, W = 518;
   const me = playerName.toLowerCase();
+  const drawRow = (i, yy) => {
+    const row = board.rows[i];
+    const mine = String(row.name).toLowerCase() === me;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = mine ? '#ffd23f' : '#5a6a90';
+    ctx.fillText((i + 1) + '.', R, yy);
+    const ic = boardIcon(row.look);   // rows from before looks existed have none
+    if (ic) ctx.drawImage(ic, I, yy - 12, 15, 15);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = mine ? '#ffd23f' : '#dfe6ff';
+    ctx.fillText(String(row.name), N, yy);
+    ctx.textAlign = 'right';
+    ctx.fillText(row.score + ' SP', S, yy);
+    ctx.fillStyle = mine ? '#c9a86a' : '#5a6a90';
+    ctx.fillText(fmtWhen(row.at), W, yy);
+  };
+
   const pages = Math.ceil(board.rows.length / BOARD_PAGE);
   if (boardPage >= pages) boardPage = pages - 1; // rows shrank under the pager
   const start = boardPage * BOARD_PAGE;
-  for (let i = start; i < Math.min(start + BOARD_PAGE, board.rows.length); i++) {
-    const row = board.rows[i];
-    const mine = String(row.name).toLowerCase() === me;
-    y += 16;
-    ctx.textAlign = 'right';
-    ctx.fillStyle = mine ? '#ffd23f' : '#5a6a90';
-    ctx.fillText((i + 1) + '.', R, y);
-    const ic = boardIcon(row.look);   // rows from before looks existed have none
-    if (ic) ctx.drawImage(ic, I, y - 12, 15, 15);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = mine ? '#ffd23f' : '#dfe6ff';
-    ctx.fillText(String(row.name), N, y);
-    ctx.textAlign = 'right';
-    ctx.fillText(row.score + ' SP', S, y);
-    ctx.fillStyle = mine ? '#c9a86a' : '#5a6a90';
-    ctx.fillText(fmtWhen(row.at), W, y);
+  const end = Math.min(start + BOARD_PAGE, board.rows.length);
+  for (let i = start; i < end; i++) { y += 16; drawRow(i, y); }
+
+  // Your own place, pulled in under the page when it isn't on it — the gap is
+  // what says "somewhere further down". On the death screen the fresh run's
+  // rank pins the exact row; elsewhere it is your best run by name. A run that
+  // fell off the stored top-200 has no row to pin, so it stays a line of text.
+  const meIdx = withRank && board.rank
+    ? board.rank - 1
+    : board.rows.findIndex((r) => String(r.name).toLowerCase() === me);
+  if (meIdx >= 0 && (meIdx < start || meIdx >= end)) {
+    if (meIdx < board.rows.length) {
+      y += 8;
+      y += 16; drawRow(meIdx, y);
+    } else {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#8f8fa8';
+      y += 20;
+      ctx.fillText('this run ranks #' + board.rank, cx, y);
+    }
   }
 
-  // pager — only once the board outgrows one page
+  // pager — below the board, only once it outgrows one page
   if (pages > 1 && hits) {
-    y += 12;
-    ctx.font = 'bold 13px monospace';
-    uiButton(hits, cx - 93, y, 36, 19, '‹', boardPage > 0 ? '#7fe0ff' : '#5a6a90',
+    y += 10;
+    ctx.font = 'bold 12px monospace';
+    uiButton(hits, cx - 80, y, 30, 16, '‹', boardPage > 0 ? '#7fe0ff' : '#5a6a90',
       () => { if (boardPage > 0) boardPage--; });
-    uiButton(hits, cx + 57, y, 36, 19, '›', boardPage < pages - 1 ? '#7fe0ff' : '#5a6a90',
+    uiButton(hits, cx + 50, y, 30, 16, '›', boardPage < pages - 1 ? '#7fe0ff' : '#5a6a90',
       () => { if (boardPage < pages - 1) boardPage++; });
     ctx.font = '12px monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#8f8fa8';
-    ctx.fillText((boardPage + 1) + ' / ' + pages, cx, y + 14);
-    y += 19;
-  }
-
-  if (withRank && board.rank) {
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#8f8fa8';
-    y += 22;
-    ctx.fillText('this run ranks #' + board.rank, cx, y);
+    ctx.fillText((boardPage + 1) + ' / ' + pages, cx, y + 12);
+    y += 16;
   }
   return y;
 }
