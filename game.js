@@ -2145,6 +2145,20 @@ const FLAKY_SPRINT = 2.4;  // ×speed sprinting back while immune
 // one. Re-measure both if VW/VH ever change.
 const FLAKY_HOP = VW / 2, FLAKY_HOP_EVERY = 2, FLAKY_REACH = 190;
 
+// The stack a failing test throws: one ring on every flip to FAIL. Smaller and
+// slower than the Monolith's — this one goes off at knife range, often the 70px
+// standoff it kites at, so it has to be threadable rather than a wall. Eight
+// glyphs are 7px apart on the rim and ~55px apart by the time the ring is 70px
+// out, which is the whole design: back off before the window shuts and you have
+// gaps to stand in, sit on top of it and you do not.
+//
+// FLAKY_WIND is the warning, drawn as a ring collapsing onto it over the last
+// of the PASS window. It carries its weight twice — it is the tell for the
+// stack AND the tell that the damage window is closing, which is the exact
+// beat a player needs to stop firing or start feeding it.
+const FLAKY_RING_N = 8, FLAKY_RING_SPEED = 88, FLAKY_RING_LIFE = 2.4;
+const FLAKY_WIND = 0.45;
+
 // Returns true when the boss moved itself this frame (skipping the generic seek).
 function bossBehave(e, dt, ux, uy) {
   if (e.boss === 'monolith') {
@@ -2372,13 +2386,25 @@ function bossBehave(e, dt, ux, uy) {
     if (e.phaseT <= 0) {
       e.pass = !e.pass;
       e.phaseT = e.pass ? cad(e, 1.7) : cad(e, 1.2);
-      if (!e.pass) e.failedAt = t; // the instant the window shut — see the feeding rule
       addFloater(e.x, e.y - e.r - 8, e.pass ? 'PASS' : 'FAIL — IMMUNE', e.pass ? '#3fe08a' : '#ff5a6e');
       sfx.ding();
-      // every other failure it just runs the suite again, somewhere else
-      if (!e.pass && ++e.fails % FLAKY_HOP_EVERY === 0) {
-        e.blinkT = 0.3;
-        addFloater(e.x, e.y - e.r - 16, 'RETRYING…', '#c9a8ff');
+      if (!e.pass) {
+        e.failedAt = t; // the instant the window shut — see the feeding rule
+        // A failing test throws its stack, and the immune window was the one
+        // half of this fight with nothing in it: you waited it out at whatever
+        // range you liked. Now the moment it goes red the room does too, so
+        // FAIL is a dodge rather than a pause — and standing on top of it when
+        // the window closes is the mistake it is there to charge you for.
+        // Telegraphed by the collapsing ring drawn over the last of PASS,
+        // which is the same beat you should be releasing the trigger on.
+        if (++e.fails % FLAKY_HOP_EVERY === 0) {
+          // every other failure it runs the suite again, somewhere else — the
+          // stack then comes out where it LANDS, not where it left
+          e.blinkT = 0.3;
+          addFloater(e.x, e.y - e.r - 16, 'RETRYING…', '#c9a8ff');
+        } else {
+          throwRing(e, FLAKY_RING_N, FLAKY_RING_SPEED, FLAKY_RING_LIFE);
+        }
       }
     }
     if (e.blinkT > 0) {
@@ -2411,6 +2437,10 @@ function bossBehave(e, dt, ux, uy) {
         e.area = pick(AREA_KEYS.filter((ar) => ar !== e.area));
         addFloater(e.x, e.y - e.r - 8,
           'RE-RAN ON ' + LANGS.find((l) => l.area === e.area).name, AREAS[e.area].color);
+        // the re-run failed too, so the stack comes out here — arriving and
+        // detonating are one event, which is what makes chasing the hop cost
+        // something rather than being the obvious free move
+        throwRing(e, FLAKY_RING_N, FLAKY_RING_SPEED, FLAKY_RING_LIFE);
       }
       return true; // it holds still through the flicker — that's the telegraph
     }
@@ -3686,6 +3716,14 @@ function drawBossTells(e, ex, ey, w, h) {
     ctx.font = 'bold 8px monospace';
     ctx.fillStyle = e.pass ? '#3fe08a' : '#ff5a6e';
     ctx.fillText(e.pass ? 'PASS' : 'FAIL', cx, ey - 6);
+    // the window closing, and the stack it is about to throw: one ring
+    // collapsing onto it, the same shape the Megaoutage uses before its slam
+    if (e.pass && e.phaseT <= cad(e, FLAKY_WIND)) {
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#ff5a6e';
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 4 + e.phaseT * 70, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
   }
   if (e.boss === 'outage' && e.mode === 'aim') {
     // the charge it is about to make, drawn before it makes it
